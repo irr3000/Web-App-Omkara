@@ -1,0 +1,60 @@
+/* Безопасная диагностика архитектуры. Не изменяет данные и не отправляет сообщения. */
+var SystemDiagnostics=(function(){
+  function errorText(error){
+    return error&&error.message?String(error.message):String(error);
+  }
+
+  function addCheck(report,name,ok,details){
+    details=details||[];
+    report.checks.push({name:name,ok:!!ok,details:details});
+    if(!ok)report.errors.push(name+": "+(details.length?details.join("; "):"проверка не пройдена"));
+  }
+
+  function collect(){
+    var report={ok:false,adapter:"",checks:[],errors:[]};
+    try{
+      report.adapter=Database.getAdapterName();
+      var adapterErrors=Database.getAdapterErrors();
+      addCheck(report,"database-contract",adapterErrors.length===0,adapterErrors);
+      if(adapterErrors.length===0){
+        var schemaErrors=Database.validateSchema(["users","applications","retreats","publications"]);
+        addCheck(report,"database-schema",schemaErrors.length===0,schemaErrors);
+      }
+    }catch(error){
+      addCheck(report,"database",false,[errorText(error)]);
+    }
+
+    var configurationErrors=[];
+    if(typeof TELEGRAM_BOT_TOKEN==="undefined"||!TELEGRAM_BOT_TOKEN)configurationErrors.push("Не задан TELEGRAM_BOT_TOKEN");
+    if(typeof VK_ACCESS_TOKEN==="undefined"||!VK_ACCESS_TOKEN)configurationErrors.push("Не задан VK_ACCESS_TOKEN");
+    if(typeof WEBHOOK_SECRET==="undefined"||!WEBHOOK_SECRET)configurationErrors.push("Не задан WEBHOOK_SECRET");
+    if(typeof ADMIN_CHAT_ID==="undefined"||!ADMIN_CHAT_ID)configurationErrors.push("Не задан ADMIN_CHAT_ID");
+    addCheck(report,"configuration",configurationErrors.length===0,configurationErrors);
+
+    var moduleErrors=[];
+    if(typeof DatabaseModels!=="object")moduleErrors.push("DatabaseModels");
+    if(typeof DatabaseContract!=="object")moduleErrors.push("DatabaseContract");
+    if(typeof AppCache!=="object")moduleErrors.push("AppCache");
+    if(typeof PublicationPlanner!=="object"||!PublicationPlanner||typeof PublicationPlanner.run!=="function")moduleErrors.push("PublicationPlanner.run");
+    if(typeof PublicationChannels!=="object"||!PublicationChannels||typeof PublicationChannels.sendPosts!=="function")moduleErrors.push("PublicationChannels.sendPosts");
+    addCheck(report,"modules",moduleErrors.length===0,moduleErrors);
+
+    var entryPointErrors=[];
+    if(typeof doPost!=="function")entryPointErrors.push("doPost");
+    if(typeof scheduler!=="function")entryPointErrors.push("scheduler");
+    addCheck(report,"entry-points",entryPointErrors.length===0,entryPointErrors);
+
+    report.ok=report.errors.length===0;
+    return report;
+  }
+
+  function log(){
+    var report=collect();
+    Logger.log(JSON.stringify(report));
+    return report;
+  }
+
+  return{collect:collect,log:log};
+})();
+
+function runSystemDiagnostics(){return SystemDiagnostics.log();}

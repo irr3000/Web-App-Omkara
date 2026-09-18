@@ -1,0 +1,237 @@
+/* CRM v1.18: Telegram и представление сообщений */
+
+function telegram(method,payload){
+  try{
+    const response=UrlFetchApp.fetch("https://api.telegram.org/bot"+TELEGRAM_BOT_TOKEN+"/"+method,{method:"post",payload:payload,muteHttpExceptions:true}),code=response.getResponseCode(),body=response.getContentText(),result=JSON.parse(body);
+    if(!result.ok&&String(result.description||"").indexOf("message is not modified")===-1)Logger.log("Telegram "+method+": "+(result.description||"HTTP "+code));
+    return result;
+  }catch(e){
+    Logger.log("Telegram "+method+": "+(e&&e.message?e.message:String(e)));
+    return{ok:false,description:"Ошибка связи с Telegram"};
+  }
+}
+
+function crmSendMessage(chatId,text,keyboard){
+  const payload={chat_id:String(chatId),text:text,parse_mode:"HTML"};
+  if(keyboard)payload.reply_markup=JSON.stringify(keyboard);
+  const result=telegram("sendMessage",payload);
+  return result.ok&&result.result?String(result.result.message_id):"";
+}
+
+function mainMenu(){
+  return{inline_keyboard:[[{text:"🕉 Онлайн-ретрит",callback_data:"retreat"}],[{text:"🧘 Индивидуальная встреча",callback_data:"meeting"}],[{text:"ℹ️ О мастере",callback_data:"about"}]]};
+}
+
+function answerCallback(callbackId){
+  telegram("answerCallbackQuery",{callback_query_id:callbackId});
+}
+
+function backMenu(){
+  return{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"menu"}]]};
+}
+
+function contactMenu(){
+  return{keyboard:[[{text:"📱 Отправить номер телефона",request_contact:true}]],resize_keyboard:true,one_time_keyboard:true};
+}
+
+function retreatPaymentMenu(retreatId){
+  return{inline_keyboard:[[{text:"📷 Прикрепить чек",callback_data:"retreat_receipt_"+retreatId}],[{text:"📖 О ретрите",callback_data:"retreat_info_"+retreatId}],[{text:"⬅️ Главное меню",callback_data:"menu"}]]};
+}
+
+function retreatInfoMenu(retreatId){
+  return{inline_keyboard:[[{text:"💳 Внести взнос",callback_data:"retreat_pay_"+retreatId}],[{text:"⬅️ Главное меню",callback_data:"menu"}]]};
+}
+
+function retreatReportedMenu(){
+  return{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"menu"}]]};
+}
+
+function retreatParticipantMenu(retreat){
+  const keyboard=[];
+  if(isTelegramUrl(retreat.group))keyboard.push([{text:"👥 Перейти в группу",url:retreat.group}]);
+  keyboard.push([{text:"⬅️ Главное меню",callback_data:"menu"}]);
+  return{inline_keyboard:keyboard};
+}
+
+function retreatFinishedMenu(retreatId,hasEmail){
+  const keyboard=[];
+  if(!hasEmail)keyboard.push([{text:"📧 Указать email",callback_data:"retreat_email_"+retreatId}]);
+  keyboard.push([{text:hasEmail?"⬅️ Главное меню":"⬅️ Не сейчас",callback_data:"menu"}]);
+  return{inline_keyboard:keyboard};
+}
+
+function retreatDescriptionMenu(retreatId){
+  return{inline_keyboard:[[{text:"✅ Записаться",callback_data:"retreat_register_"+retreatId}],[{text:"⬅️ Главное меню",callback_data:"menu"}]]};
+}
+
+function meetingInfoMenu(){
+  return{inline_keyboard:[[{text:"✅ Записаться",callback_data:"meeting_register"}],[{text:"⬅️ Главное меню",callback_data:"menu"}]]};
+}
+
+function meetingSavedDataMenu(){
+  return{inline_keyboard:[[{text:"✅ Использовать эти данные",callback_data:"meeting_use_saved"}],[{text:"✏️ Изменить данные",callback_data:"meeting_edit_data"}],[{text:"⬅️ Главное меню",callback_data:"menu"}]]};
+}
+
+function meetingPaymentMenu(){
+  return{inline_keyboard:[[{text:"📷 Прикрепить чек",callback_data:"meeting_receipt"}],[{text:"📖 О встрече",callback_data:"meeting_info"}],[{text:"⬅️ Главное меню",callback_data:"menu"}]]};
+}
+
+function meetingInfoBackMenu(){
+  return{inline_keyboard:[[{text:"💛 К переводу благодарности",callback_data:"meeting_pay"}],[{text:"⬅️ Главное меню",callback_data:"menu"}]]};
+}
+
+function meetingReportedMenu(){
+  return{inline_keyboard:[[{text:"⬅️ Главное меню",callback_data:"menu"}]]};
+}
+
+function meetingConfirmedMenu(){
+  return{inline_keyboard:[[{text:"🔄 Записаться на новую встречу",callback_data:"meeting_register"}],[{text:"⬅️ Главное меню",callback_data:"menu"}]]};
+}
+
+function adminRetreatMenu(telegramId,retreatId){
+  const confirmData="admin|confirm|"+String(telegramId)+"|"+encodeURIComponent(String(retreatId)),rejectData="admin|reject|"+String(telegramId)+"|"+encodeURIComponent(String(retreatId));
+  return{inline_keyboard:[[{text:"✅ Подтвердить перевод",callback_data:confirmData}],[{text:"❌ Запросить повторный перевод",callback_data:rejectData}]]};
+}
+
+function adminMeetingMenu(telegramId){
+  const confirmData="admin|meeting_confirm|"+String(telegramId)+"|"+MEETING_REQUEST_ID,rejectData="admin|meeting_reject|"+String(telegramId)+"|"+MEETING_REQUEST_ID;
+  return{inline_keyboard:[[{text:"✅ Подтвердить перевод",callback_data:confirmData}],[{text:"❌ Запросить повторный перевод",callback_data:rejectData}]]};
+}
+
+function adminReceiptCaption(telegramId,retreatId){
+  const person=getRetreatPerson(telegramId),retreat=getRetreatData(retreatId)||{},username=person.username?"@"+escapeHtml(person.username):"—";
+  return"🕉 <b>Новое сообщение о взносе</b>\n\n<b>Ретрит:</b> "+escapeHtml(retreat.name||retreatId)+"\n<b>Имя:</b> "+escapeHtml(person.firstName)+"\n<b>Фамилия:</b> "+escapeHtml(person.lastName)+"\n<b>Username:</b> "+username+"\n<b>Телефон:</b> "+escapeHtml(person.phone)+"\n\n<b>Telegram ID:</b>\n"+escapeHtml(telegramId);
+}
+
+function adminMeetingReceiptCaption(telegramId){
+  const person=getRetreatPerson(telegramId),username=person.username?"@"+escapeHtml(person.username):"—";
+  return"🧘 <b>Новый перевод благодарности</b>\n\n<b>Запись:</b> Индивидуальная встреча\n<b>Сумма:</b> "+MEETING_PRICE+"\n<b>Имя:</b> "+escapeHtml(person.firstName)+"\n<b>Фамилия:</b> "+escapeHtml(person.lastName)+"\n<b>Username:</b> "+username+"\n<b>Телефон:</b> "+escapeHtml(person.phone)+"\n\n<b>Telegram ID:</b>\n"+escapeHtml(telegramId);
+}
+
+function adminResultCaption(person,telegramId,subjectName,title,action,adminName,subjectLabel){
+  const username=person.username?"<b>Telegram:</b> @"+escapeHtml(person.username)+"\n":"";
+  return"🕉 <b>"+escapeHtml(title)+"</b>\n\n<b>"+escapeHtml(subjectLabel||"Ретрит")+":</b> "+escapeHtml(subjectName)+"\n<b>Имя:</b> "+escapeHtml(person.firstName)+"\n<b>Фамилия:</b> "+escapeHtml(person.lastName)+"\n"+username+"<b>Телефон:</b> "+escapeHtml(person.phone)+"\n\n<b>ID:</b> "+escapeHtml(telegramId)+"\n\n"+action+" "+escapeHtml(adminName);
+}
+
+function retreatInfo(retreat){
+  const start=formatRetreatDate(retreat.start),end=formatRetreatDate(retreat.end),price=retreat.price!==""?escapeHtml(retreat.price):"уточняется";
+  let dates=start;
+  if(end&&!dates)dates=end;
+  else if(end&&end!==start)dates+=" — "+end;
+  return"🕉 <b>"+escapeHtml(retreat.name||"Онлайн-ретрит")+"</b>\n\nРетрит — это глубокое погружение в тишину через ежедневные совместные медитации, сатсанги и даршаны с Мастером.\n\nНа время ретрита важно освободиться от дел и общения, соблюдать мауну — полное молчание — и полностью посвятить себя внутреннему процессу.\n\nВо время сатсангов можно задать Мастеру важный вопрос и получить необходимое прояснение. Медитации и даршаны проходят в атмосфере доверия, принятия и внутреннего покоя.\n\nПодробные условия и рекомендации Вы получите после регистрации.\n\n📅 <b>Дата:</b> "+(dates||"уточняется")+"\n🛠 <b>Организационный взнос:</b> "+price+"\n\nДля записи нажмите кнопку «✅ Записаться».";
+}
+
+function retreatPaymentInfo(){
+  return"🕉 <b>Онлайн-ретрит</b>\n\nДля участия в онлайн-ретрите необходимо внести организационный взнос.\n\n"+transferDetails()+"\n\nПосле перевода нажмите кнопку ниже.";
+}
+
+function retreatRejectedInfo(){
+  return"🕉 <b>Перевод пока не подтверждён</b>\n\nПожалуйста, проверьте перевод и прикрепите новый чек.\n\n"+transferDetails();
+}
+
+function meetingInfo(){
+  return"🧘 <b>Индивидуальная встреча с Мастером</b>\n\n⏱ <b>Продолжительность:</b> 1 час\n💻 <b>Формат:</b> онлайн в приложении Zoom\n🔗 <b>Ссылка:</b> отправляется за 5 минут до назначенного времени\n\nВо время общения с Мастером Вы можете задать любые вопросы, которые требуют прояснения «здесь и сейчас».\n\n💛 <b>Благодарность:</b> "+MEETING_PRICE+"\n\nДля записи нажмите кнопку «✅ Записаться».";
+}
+
+function meetingSavedDataInfo(person){
+  return"🧘 <b>Проверьте данные для записи</b>\n\n<b>Имя:</b> "+escapeHtml(person.firstName)+"\n<b>Фамилия:</b> "+escapeHtml(person.lastName)+"\n<b>Телефон:</b> "+escapeHtml(person.phone)+"\n\nИспользовать эти данные для новой записи?";
+}
+
+function meetingPaymentInfo(){
+  return"🧘 <b>Индивидуальная встреча</b>\n\nДля записи необходимо внести благодарность в размере "+MEETING_PRICE+".\n\n"+transferDetails()+"\n\nПосле перевода нажмите кнопку ниже.";
+}
+
+function meetingRejectedInfo(){
+  return"🧘 <b>Перевод пока не подтверждён</b>\n\nПожалуйста, проверьте перевод и прикрепите новый чек.\n\n"+transferDetails();
+}
+
+function meetingStatusInfo(status){
+  if(status===STATUS_PAYMENT_REPORTED)return"🧘 <b>Индивидуальная встреча</b>\n\n🙏 Благодарю! Мы получили Ваше сообщение о переводе благодарности.\n\nПосле проверки перевода статус будет обновлён.";
+  if(status===STATUS_MEETING_CONFIRMED)return"🧘 <b>Индивидуальная встреча</b>\n\n✅ Индивидуальная встреча подтверждена. Текущая заявка завершена.\n\nАдминистратор свяжется с Вами для согласования даты, времени и формата встречи. При необходимости Вы можете записаться на новую встречу кнопкой ниже.";
+  return meetingInfo();
+}
+
+function transferDetails(){
+  return"💳 <b>Реквизиты для перевода:</b>\n\nСбербанк\nКарта: 2200 7020 0232 5491\nПолучатель: Ирина Г.";
+}
+
+function retreatStatusInfo(status){
+  return"🕉 <b>Онлайн-ретрит</b>\n\n"+(RETREAT_STATUS_TEXT[status]||"");
+}
+
+function retreatFinishedInfo(hasEmail){
+  let text=retreatStatusInfo(STATUS_FINISHED);
+  if(!hasEmail)text+="\n\nЧтобы мы не потеряли связь, если доступ к Telegram будет ограничен, Вы можете оставить свой email.\n\nНа него мы сможем отправлять важную информацию о будущих встречах и ретритах. Это необязательно.";
+  return text;
+}
+
+function crmSendPhoto(chatId,fileId,caption,keyboard){
+  try{
+    const payload={chat_id:String(chatId),photo:fileId,caption:caption,parse_mode:"HTML"};
+    if(keyboard)payload.reply_markup=JSON.stringify(keyboard);
+    const result=telegram("sendPhoto",payload);
+    return result.ok&&result.result?String(result.result.message_id):"";
+  }catch(e){
+    Logger.log("sendPhoto: "+(e&&e.message?e.message:String(e)));
+    return"";
+  }
+}
+
+function crmSendDocument(chatId,fileId,caption,keyboard){
+  const payload={chat_id:String(chatId),document:fileId,caption:caption,parse_mode:"HTML"};
+  if(keyboard)payload.reply_markup=JSON.stringify(keyboard);
+  const result=telegram("sendDocument",payload);
+  return!!result.ok;
+}
+
+function deleteTelegramMessage(chatId,messageId){
+  if(messageId)telegram("deleteMessage",{chat_id:String(chatId),message_id:String(messageId)});
+}
+
+function editTelegramText(chatId,messageId,text,keyboard){
+  const payload={chat_id:String(chatId),message_id:String(messageId),text:text,parse_mode:"HTML"};
+  if(keyboard)payload.reply_markup=JSON.stringify(keyboard);
+  const result=telegram("editMessageText",payload);
+  return result.ok||String(result.description||"").indexOf("message is not modified")!==-1;
+}
+
+function editTelegramCaption(chatId,messageId,caption,keyboard){
+  const payload={chat_id:String(chatId),message_id:String(messageId),caption:caption,parse_mode:"HTML"};
+  if(keyboard)payload.reply_markup=JSON.stringify(keyboard);
+  telegram("editMessageCaption",payload);
+}
+
+function sendActiveMessage(chatId,text,keyboard){
+  const oldMessageId=getActiveMessage(chatId),canEdit=!keyboard||!!keyboard.inline_keyboard;
+  if(oldMessageId&&canEdit&&editTelegramText(chatId,oldMessageId,text,keyboard))return String(oldMessageId);
+  const newMessageId=crmSendMessage(chatId,text,keyboard);
+  if(!newMessageId)return"";
+  setActiveMessage(chatId,newMessageId);
+  if(oldMessageId)deleteTelegramMessage(chatId,oldMessageId);
+  return String(newMessageId);
+}
+
+function sendNewActiveMessage(chatId,text,keyboard,state){
+  const messageId=crmSendMessage(chatId,text,keyboard);
+  if(!messageId)return"";
+  if(state===undefined)setActiveMessage(chatId,messageId);
+  else setStateAndActiveMessage(chatId,state,messageId);
+  return String(messageId);
+}
+
+function replaceActiveMessage(chatId,text,keyboard,state){
+  const oldMessageId=getActiveMessage(chatId),newMessageId=crmSendMessage(chatId,text,keyboard);
+  if(!newMessageId)return"";
+  if(state===undefined)setActiveMessage(chatId,newMessageId);
+  else setStateAndActiveMessage(chatId,state,newMessageId);
+  if(oldMessageId)deleteTelegramMessage(chatId,oldMessageId);
+  return String(newMessageId);
+}
+
+function aboutMasterInfo(){
+  return"<b>«Бог принимает форму Гуру и является преданному, открывает ему Истину и очищает его ум своим присутствием».</b>\n\n<i>Рамана Махарши</i>\n\nМастер Омкара — это бесформенный Свет Самости, из сострадания проявившийся в видимой форме.\n\nВ результате многолетнего поиска Истины и пребывания в монашеском уединении рядом со своим Гуру сердце Мастера слилось с Единым. Его тело прошло глубокую трансформацию, став источником Света Божественной Любви, дарующего покой и освобождение.\n\nИз этого преображения родилось естественное служение всем живым существам, чтобы каждый готовый мог прийти к Мастеру здесь и сейчас.\n\nВо время Даршана и медитации Свет СоЗнания проливается на Тебя, растворяя искажения ума и возвращая его к изначальному просветлённому состоянию.\n\nВ поле Мастера ум замолкает, открывая каждому возможность пройти глубочайшую внутреннюю трансформацию и очищение физического тела на всех уровнях. Двойственное восприятие исчезает вместе с эго, освобождая сознание от иллюзии отдельной личности.\n\nВсе твои вопросы получат ответы на сатсангах с Мастером.\n\n<b>Если ты созрел и готов обнаружить истинную природу своей Самости — Мастер здесь.</b>";
+}
+
+function mainMenuText(){
+  return"🙏 <b>Добро пожаловать!</b>\n\nЗдесь открыта возможность познакомиться с Мастером Омкара и получить возможность взаимодействия с ним 🙏\n\nВыберите интересующий Вас раздел ниже.";
+}

@@ -1,0 +1,104 @@
+/* CRM v1.18: пользователи и ввод персональных данных */
+
+function saveSeeker(update){
+  const user=update.message&&update.message.from?update.message.from:update.callback_query&&update.callback_query.from?update.callback_query.from:null;
+  if(!user||String(user.id)===String(ADMIN_CHAT_ID))return;
+  Database.users.upsertFromTelegram(user);
+}
+
+function setState(telegramId,state){
+  Database.users.setState(telegramId,state);
+}
+
+function getState(telegramId){
+  const user=Database.users.getByTelegramId(telegramId);
+  return user?String(user.state||""):"";
+}
+
+function setOnlineRetreatId(telegramId,retreatId){
+  Database.users.setOnlineRetreatId(telegramId,retreatId);
+}
+
+function getOnlineRetreatId(telegramId){
+  const user=Database.users.getByTelegramId(telegramId);
+  return user?String(user.onlineRetreatId||""):"";
+}
+
+function setActiveMessage(telegramId,messageId){
+  Database.users.setActiveMessageId(telegramId,messageId);
+}
+
+function getActiveMessage(telegramId){
+  const user=Database.users.getByTelegramId(telegramId);
+  return user?String(user.activeMessageId||""):"";
+}
+
+function setStateAndActiveMessage(telegramId,state,messageId){
+  Database.users.setStateAndActiveMessage(telegramId,state,messageId);
+}
+
+function getRetreatPerson(telegramId){
+  return Database.users.getPerson(telegramId);
+}
+
+function handleTextMessage(update){
+  const message=update.message;
+  if(!message||!message.text)return;
+  const chatId=message.chat.id,telegramId=message.from.id,messageId=message.message_id,text=message.text.trim(),state=getState(telegramId);
+  if(state===STATE_WAIT_EMAIL){
+    const email=normalizeEmail(text);
+    deleteTelegramMessage(chatId,messageId);
+    if(!isValidEmail(email)){sendActiveMessage(chatId,"🙏 Проверьте адрес и отправьте email ещё раз. Например: name@example.com",backMenu());return;}
+    Database.users.setEmail(telegramId,email);
+    setState(telegramId,"");
+    sendActiveMessage(chatId,"🙏 Благодарю! Ваш email сохранён.",retreatFinishedMenu(getOnlineRetreatId(telegramId),true));
+    return;
+  }
+  if(state===STATE_WAIT_MEETING_NAME){
+    Database.users.setFirstName(telegramId,text);
+    setState(telegramId,STATE_WAIT_MEETING_LASTNAME);
+    deleteTelegramMessage(chatId,messageId);
+    sendActiveMessage(chatId,"🙏 Укажите, пожалуйста, Вашу фамилию.",backMenu());
+    return;
+  }
+  if(state===STATE_WAIT_MEETING_LASTNAME){
+    Database.users.setLastName(telegramId,text);
+    setState(telegramId,STATE_WAIT_MEETING_PHONE);
+    deleteTelegramMessage(chatId,messageId);
+    sendActiveMessage(chatId,"🙏 Нажмите кнопку ниже, чтобы отправить Ваш номер телефона.",contactMenu());
+    return;
+  }
+  if(state==="Ожидает имя"){
+    Database.users.setFirstName(telegramId,text);
+    setState(telegramId,"Ожидает фамилию");
+    deleteTelegramMessage(chatId,messageId);
+    sendActiveMessage(chatId,"🙏 Укажите, пожалуйста, Вашу фамилию.",backMenu());
+    return;
+  }
+  if(state==="Ожидает фамилию"){
+    Database.users.setLastName(telegramId,text);
+    setState(telegramId,"Ожидает телефон");
+    deleteTelegramMessage(chatId,messageId);
+    sendActiveMessage(chatId,"🙏 Нажмите кнопку ниже, чтобы отправить Ваш номер телефона.",contactMenu());
+  }
+}
+
+function handleContactMessage(message){
+  const chatId=message.chat.id,telegramId=message.from.id,messageId=message.message_id,contact=message.contact,state=getState(telegramId);
+  if(state!=="Ожидает телефон"&&state!==STATE_WAIT_MEETING_PHONE)return;
+  if(String(contact.user_id)!==String(telegramId)){deleteTelegramMessage(chatId,messageId);sendActiveMessage(chatId,"🙏 Пожалуйста, воспользуйтесь кнопкой ниже, чтобы отправить именно свой номер телефона.",contactMenu());return;}
+  Database.users.setPhone(telegramId,contact.phone_number);
+  deleteTelegramMessage(chatId,messageId);
+  if(state===STATE_WAIT_MEETING_PHONE){
+    if(!createMeetingRequest(telegramId)){setState(telegramId,"");sendActiveMessage(chatId,"🙏 Не удалось начать новую запись. Пожалуйста, попробуйте ещё раз.",backMenu());return;}
+    setState(telegramId,"");
+    showMeetingPayment(chatId);
+  }else{
+    setState(telegramId,"");
+    showPaymentScreen(chatId,getOnlineRetreatId(telegramId));
+  }
+}
+
+function preloadSeekers(){
+  Database.users.preload();
+}

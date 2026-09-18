@@ -1,0 +1,44 @@
+/* CRM v1.18: утилиты и служебные функции */
+
+function isTelegramUrl(value){
+  return/^(https?:\/\/|tg:\/\/)/i.test(String(value||"").trim());
+}
+
+function normalizeEmail(value){
+  return String(value||"").trim().toLowerCase();
+}
+
+function isValidEmail(value){
+  return value.length<=254&&/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value);
+}
+
+function escapeHtml(value){
+  return String(value==null?"":value).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+function getConfigurationErrors(){
+  const errors=Database.getAdapterErrors();
+  if(!errors.length){
+    const schemaErrors=Database.validateSchema(["users","applications","retreats"]);
+    for(let i=0;i<schemaErrors.length;i++)errors.push(schemaErrors[i]);
+  }
+  if(!TELEGRAM_BOT_TOKEN)errors.push("Не задано свойство TELEGRAM_BOT_TOKEN");
+  if(!VK_ACCESS_TOKEN)errors.push("Не задано свойство VK_ACCESS_TOKEN");
+  if(!WEBHOOK_SECRET)errors.push("Не задано свойство WEBHOOK_SECRET");
+  return errors;
+}
+
+function validateConfiguration(){
+  const errors=getConfigurationErrors(),text=errors.length?"⚠️ <b>Проверка CRM</b>\n\n"+errors.map(function(item){return"• "+escapeHtml(item);}).join("\n"):"✅ <b>Проверка CRM</b>\n\nКонфигурация заполнена правильно.";
+  Logger.log(text.replace(/<[^>]+>/g,""));
+  if(TELEGRAM_BOT_TOKEN)crmSendMessage(ADMIN_CHAT_ID,text);
+  return errors.length===0;
+}
+
+function setWebhook(){
+  const WEB_APP_URL="https://script.google.com/macros/s/AKfycbzHbEJ81QRFcq27qdkur-KSA8K0HQ5dDP_l5smKs1BvGy4x0-_AJ2m4vly4Rct3Hlatvw/exec";
+  if(!TELEGRAM_BOT_TOKEN||!WEBHOOK_SECRET)throw new Error("Не заполнены TELEGRAM_BOT_TOKEN или WEBHOOK_SECRET в свойствах скрипта");
+  const webhookUrl=WEB_APP_URL+"?key="+encodeURIComponent(WEBHOOK_SECRET);
+  const response=UrlFetchApp.fetch("https://api.telegram.org/bot"+TELEGRAM_BOT_TOKEN+"/setWebhook?url="+encodeURIComponent(webhookUrl));
+  Logger.log(response.getContentText());
+}

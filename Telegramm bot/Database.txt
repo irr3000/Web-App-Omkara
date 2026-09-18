@@ -1,0 +1,65 @@
+/* Публичный слой данных. Выбор хранилища сосредоточен в функции adapter(). */
+var Database=(function(){
+  var selectedAdapter=null;
+
+  function adapter(){
+    return selectedAdapter||DatabaseSheets;
+  }
+
+  function call(section,method,args){
+    var current=adapter(),target=section?current[section]:current;
+    return target[method].apply(target,args||[]);
+  }
+
+  function useAdapter(nextAdapter){
+    selectedAdapter=DatabaseContract.assertAdapter(nextAdapter);
+    AppCache.resetRuntime();
+    return true;
+  }
+
+  function useDefaultAdapter(){
+    selectedAdapter=null;
+    AppCache.resetRuntime();
+    return true;
+  }
+
+  return{
+    useAdapter:useAdapter,
+    useDefaultAdapter:useDefaultAdapter,
+    getAdapterErrors:function(){return DatabaseContract.getErrors(adapter());},
+    getAdapterName:function(){return String(adapter().name||"custom");},
+    users:{
+      getByTelegramId:function(telegramId){return DatabaseModels.user(call("users","get",[telegramId]));},
+      upsertFromTelegram:function(user){return DatabaseModels.user(call("users","upsertTelegram",[user]));},
+      setUsername:function(telegramId,value){return call("users","setField",[telegramId,"username",value||""]);},
+      setFirstName:function(telegramId,value){return call("users","setField",[telegramId,"firstName",value||""]);},
+      setLastName:function(telegramId,value){return call("users","setField",[telegramId,"lastName",value||""]);},
+      setPhone:function(telegramId,value){return call("users","setField",[telegramId,"phone",value||""]);},
+      setEmail:function(telegramId,value){return call("users","setField",[telegramId,"email",value||""]);},
+      setState:function(telegramId,value){return call("users","setField",[telegramId,"state",value||""]);},
+      setActiveMessageId:function(telegramId,value){return call("users","setField",[telegramId,"activeMessageId",String(value||"")]);},
+      setOnlineRetreatId:function(telegramId,value){return call("users","setField",[telegramId,"onlineRetreatId",String(value||"")]);},
+      setStateAndActiveMessage:function(telegramId,state,messageId){return call("users","setStateAndActiveMessage",[telegramId,state,messageId]);},
+      getPerson:function(telegramId){return DatabaseModels.person(call("users","getPerson",[telegramId]));},
+      preload:function(){return DatabaseModels.users(call("users","preload"));}
+    },
+    applications:{
+      getLatest:function(telegramId,subjectId,refresh){return DatabaseModels.application(call("applications","getLatest",[telegramId,subjectId,!!refresh]));},
+      create:function(data){return DatabaseModels.application(call("applications","create",[data]));},
+      updateStatus:function(telegramId,subjectId,expectedStatus,status,updatedAt){return call("applications","updateStatus",[telegramId,subjectId,expectedStatus,status,updatedAt]);},
+      list:function(){return DatabaseModels.applications(call("applications","list"));},
+      bulkUpdateStatus:function(ids,status,updatedAt){return call("applications","bulkUpdateStatus",[ids,status,updatedAt]);}
+    },
+    retreats:{
+      list:function(){return DatabaseModels.retreats(call("retreats","list"));},
+      getById:function(retreatId){return DatabaseModels.retreat(call("retreats","list")[String(retreatId)]||null);}
+    },
+    publications:{
+      list:function(){return DatabaseModels.publications(call("publications","list"));},
+      savePostIds:function(id,postIds){return call("publications","savePostIds",[id,postIds]);},
+      complete:function(id,postIds,publishedAt,schedule){return call("publications","complete",[id,postIds,publishedAt,schedule]);},
+      clearDelivery:function(id){return call("publications","clearDelivery",[id]);}
+    },
+    validateSchema:function(keys){return call("","validateSchema",[keys]);}
+  };
+})();

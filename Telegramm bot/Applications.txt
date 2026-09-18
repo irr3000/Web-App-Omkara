@@ -1,0 +1,83 @@
+/* CRM v1.18: заявки и индивидуальные встречи */
+
+function showMeetingScreen(chatId){
+  const request=getRequestData(chatId,MEETING_REQUEST_ID);
+  if(!request){showMeetingInfo(chatId);return;}
+  if(request.status===STATUS_WAIT_PAYMENT){showMeetingPayment(chatId);return;}
+  if(request.status===STATUS_PAYMENT_REPORTED){sendActiveMessage(chatId,meetingStatusInfo(request.status),meetingReportedMenu());return;}
+  if(request.status===STATUS_MEETING_CONFIRMED){sendActiveMessage(chatId,meetingStatusInfo(request.status),meetingConfirmedMenu());return;}
+  showMeetingInfo(chatId);
+}
+
+function showMeetingInfo(chatId){
+  const request=getRequestData(chatId,MEETING_REQUEST_ID),returnToPayment=request&&request.status===STATUS_WAIT_PAYMENT;
+  sendActiveMessage(chatId,meetingInfo(),returnToPayment?meetingInfoBackMenu():meetingInfoMenu());
+}
+
+function createMeetingRequest(telegramId){
+  telegramId=String(telegramId);
+  const retreatId=MEETING_REQUEST_ID,lock=LockService.getScriptLock();
+  if(!lock.tryLock(10000))return false;
+  try{
+    const request=Database.applications.getLatest(telegramId,retreatId,true);
+    if(request){
+      if(request.status===STATUS_WAIT_PAYMENT)return true;
+      if(request.status!==STATUS_MEETING_CONFIRMED)return false;
+    }
+    const person=getRetreatPerson(telegramId),now=new Date();
+    return!!Database.applications.create({telegramId:telegramId,subjectId:retreatId,firstName:person.firstName,lastName:person.lastName,phone:person.phone,status:STATUS_WAIT_PAYMENT,reserved:"",createdAt:now,updatedAt:now});
+  }finally{lock.releaseLock();}
+}
+
+function hasRetreatRequest(telegramId,retreatId){
+  return!!getRequestData(telegramId,retreatId);
+}
+
+function getRequestData(telegramId,retreatId){
+  return Database.applications.getLatest(telegramId,retreatId,false);
+}
+
+function updateRetreatStatus(telegramId,status,retreatId,isLocked){
+  telegramId=String(telegramId);
+  retreatId=String(retreatId||"");
+  const lock=isLocked?null:LockService.getScriptLock();
+  if(lock&&!lock.tryLock(10000))return false;
+  try{
+    const request=getRequestData(telegramId,retreatId);
+    if(!request)return false;
+    if(request.status===status)return true;
+    if(!isStatusTransitionAllowed(request.status,status))return false;
+    return Database.applications.updateStatus(telegramId,retreatId,request.status,status,new Date());
+  }finally{if(lock)lock.releaseLock();}
+}
+
+function isStatusTransitionAllowed(currentStatus,nextStatus){
+  return(ALLOWED_STATUS_TRANSITIONS[currentStatus]||[]).indexOf(nextStatus)!==-1;
+}
+
+function hasActiveMeetingRequest(request){
+  return!!request&&(request.status===STATUS_WAIT_PAYMENT||request.status===STATUS_PAYMENT_REPORTED);
+}
+
+function startMeetingDataEntry(chatId){
+  const request=getRequestData(chatId,MEETING_REQUEST_ID);
+  if(hasActiveMeetingRequest(request)){showMeetingScreen(chatId);return;}
+  setState(chatId,STATE_WAIT_MEETING_NAME);
+  sendActiveMessage(chatId,"🙏 Как к Вам обращаться?",backMenu());
+}
+
+function startMeetingWithSavedData(chatId){
+  const request=getRequestData(chatId,MEETING_REQUEST_ID);
+  if(hasActiveMeetingRequest(request)){showMeetingScreen(chatId);return;}
+  if(!createMeetingRequest(chatId)){setState(chatId,"");sendActiveMessage(chatId,"🙏 Не удалось начать новую запись. Пожалуйста, попробуйте ещё раз.",backMenu());return;}
+  setState(chatId,"");
+  showMeetingPayment(chatId);
+}
+
+function startMeetingRegistration(chatId){
+  const request=getRequestData(chatId,MEETING_REQUEST_ID);
+  if(hasActiveMeetingRequest(request)){showMeetingScreen(chatId);return;}
+  const person=getRetreatPerson(chatId);
+  if(person.firstName&&person.lastName&&person.phone){setState(chatId,"");sendActiveMessage(chatId,meetingSavedDataInfo(person),meetingSavedDataMenu());return;}
+  startMeetingDataEntry(chatId);
+}

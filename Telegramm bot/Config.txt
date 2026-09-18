@@ -1,0 +1,6 @@
+/* Секретные значения хранятся в свойствах скрипта, а не в исходном коде. */
+const SCRIPT_PROPERTIES = PropertiesService.getScriptProperties();
+const TELEGRAM_BOT_TOKEN = SCRIPT_PROPERTIES.getProperty("TELEGRAM_BOT_TOKEN") || "";
+const VK_ACCESS_TOKEN = SCRIPT_PROPERTIES.getProperty("VK_ACCESS_TOKEN") || "";
+const VK_API_VERSION = "5.199";
+const WEBHOOK_SECRET = SCRIPT_PROPERTIES.getProperty("WEBHOOK_SECRET") || "";
