@@ -1,0 +1,52 @@
+/* Оркестрация расписания публикаций. Работает только через Database. */
+var PublicationPlanner=(function(){
+  function getNextPublicationSchedule(repeat,postDate){
+    if(repeat===""||repeat==="Нет")return{clear:true,nextDate:null};
+    const newDate=new Date(postDate);
+    switch(repeat){
+      case "Ежедневно":
+        newDate.setDate(newDate.getDate()+1);
+        break;
+      case "Еженедельно":
+        newDate.setDate(newDate.getDate()+7);
+        break;
+      case "Ежемесячно":
+        newDate.setMonth(newDate.getMonth()+1);
+        break;
+    }
+    return{clear:false,nextDate:newDate};
+  }
+
+  function run(){
+    const publications=Database.publications.list(),now=new Date();
+    for(let i=0;i<publications.length;i++){
+      const publication=publications[i],photoId=String(publication.photoId).trim(),text=publication.text,postDate=publication.postDate,postTime=publication.postTime,repeat=publication.repeat,channels=String(publication.channels).split("|").map(function(channel){return channel.trim();}).filter(function(channel){return channel;}),lifetime=String(publication.lifetime||"").trim().toLowerCase(),published=publication.publishedAt,postIds=String(publication.postIds||"").trim(),buttons=publication.buttons;
+      if(!channels.length)continue;
+      if(postIds&&lifetime&&published instanceof Date){
+        const deleteDate=new Date(published),value=String(lifetime).trim().toLowerCase();
+        if(value.endsWith("м"))deleteDate.setMinutes(deleteDate.getMinutes()+parseInt(value));
+        else if(value.endsWith("ч"))deleteDate.setHours(deleteDate.getHours()+parseInt(value));
+        else deleteDate.setDate(deleteDate.getDate()+parseInt(value));
+        if(now>=deleteDate&&PublicationChannels.deletePosts(channels,postIds)){
+          Database.publications.clearDelivery(publication.id);
+        }
+        continue;
+      }
+      if(!(postDate instanceof Date)||!(postTime instanceof Date))continue;
+      const publishDateTime=new Date(postDate.getFullYear(),postDate.getMonth(),postDate.getDate(),postTime.getHours(),postTime.getMinutes());
+      if(now<publishDateTime)continue;
+      const result=PublicationChannels.sendPosts(channels,photoId,text,postIds,buttons);
+      const serializedIds=JSON.stringify(result.ids);
+      if(!result.complete){
+        Database.publications.savePostIds(publication.id,serializedIds);
+        continue;
+      }
+      Database.publications.complete(publication.id,serializedIds,now,getNextPublicationSchedule(repeat,postDate));
+    }
+  }
+
+  return{
+    getNextPublicationSchedule:getNextPublicationSchedule,
+    run:run
+  };
+})();

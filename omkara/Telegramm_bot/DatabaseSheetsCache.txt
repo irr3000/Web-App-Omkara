@@ -1,0 +1,56 @@
+/* Кэш адаптера Google Sheets. Только этот модуль хранит ссылки на строки листов. */
+var DatabaseSheetsCache=(function(){
+  var RUNTIME_NAMESPACE="google-sheets",REFERENCE_SECONDS=21600,EMPTY_APPLICATION_SECONDS=600;
+  var userReferences=null,applicationReferences=null;
+
+  function newRuntime(){
+    return{
+      spreadsheet:null,
+      sheets:Object.create(null),
+      userReferences:Object.create(null),
+      users:Object.create(null),
+      people:Object.create(null),
+      applicationReferences:Object.create(null),
+      applications:Object.create(null),
+      retreatsLoaded:false,
+      retreats:Object.create(null)
+    };
+  }
+
+  function runtime(){
+    return AppCache.getRuntime(RUNTIME_NAMESPACE,newRuntime);
+  }
+
+  function userStore(){
+    if(!userReferences)userReferences=AppCache.createPersistentStore("seeker_row_",REFERENCE_SECONDS);
+    return userReferences;
+  }
+
+  function applicationStore(){
+    if(!applicationReferences)applicationReferences=AppCache.createPersistentStore("request_row_",REFERENCE_SECONDS,EMPTY_APPLICATION_SECONDS);
+    return applicationReferences;
+  }
+
+  function invalidateApplication(key){
+    key=String(key);
+    var current=runtime();
+    delete current.applicationReferences[key];
+    delete current.applications[key];
+    applicationStore().remove(key);
+  }
+
+  return{
+    runtime:runtime,
+    users:{
+      getReference:function(telegramId){return Number(userStore().get(telegramId)||0);},
+      setReference:function(telegramId,reference){userStore().set(telegramId,reference);},
+      removeReference:function(telegramId){userStore().remove(telegramId);}
+    },
+    applications:{
+      getReference:function(key){return applicationStore().get(key);},
+      setReference:function(key,reference){applicationStore().set(key,reference);},
+      removeReference:function(key){applicationStore().remove(key);},
+      invalidate:invalidateApplication
+    }
+  };
+})();

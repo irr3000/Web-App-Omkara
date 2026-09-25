@@ -1,0 +1,155 @@
+/* Доставка публикаций по внешним каналам. Не знает о Database и расписании. */
+var PublicationChannels=(function(){
+  function sendTelegram(destinationId,imageBlob,text,replyMarkup){
+    try{
+      const payload={chat_id:destinationId,photo:imageBlob,caption:text};
+      if(replyMarkup)payload.reply_markup=replyMarkup;
+      const response=UrlFetchApp.fetch(
+        "https://api.telegram.org/bot"+TELEGRAM_BOT_TOKEN+"/sendPhoto",
+        {method:"post",payload:payload,muteHttpExceptions:true}
+      );
+      const result=JSON.parse(response.getContentText());
+      return result.ok?result.result.message_id:null;
+    }catch(e){
+      return null;
+    }
+  }
+
+  function deleteTelegram(destinationId,postId){
+    try{
+      const response=UrlFetchApp.fetch("https://api.telegram.org/bot"+TELEGRAM_BOT_TOKEN+"/deleteMessage",{
+        method:"post",
+        payload:{chat_id:destinationId,message_id:postId},
+        muteHttpExceptions:true
+      });
+      const result=JSON.parse(response.getContentText());
+      return result.ok;
+    }catch(e){
+      return false;
+    }
+  }
+
+  function vkRequest(method,payload){
+    try{
+      const response=UrlFetchApp.fetch("https://api.vk.com/method/"+method,{
+        method:"post",
+        payload:{...payload,access_token:VK_ACCESS_TOKEN,v:VK_API_VERSION},
+        muteHttpExceptions:true
+      });
+      const result=JSON.parse(response.getContentText());
+      if(result.error)return null;
+      return result.response||null;
+    }catch(e){
+      return null;
+    }
+  }
+
+  function sendVK(groupId,text){
+    const post=vkRequest("wall.post",{owner_id:"-"+groupId,from_group:1,message:text});
+    return post?post.post_id:null;
+  }
+
+  function deleteVK(groupId,postId){
+    return vkRequest("wall.delete",{owner_id:"-"+groupId,post_id:postId})===1;
+  }
+
+  function plannerSendMessage(chatId,text,replyMarkup){
+    try{
+      const payload={chat_id:chatId,text:text,parse_mode:"HTML"};
+      if(replyMarkup)payload.reply_markup=replyMarkup;
+      const response=UrlFetchApp.fetch(
+        "https://api.telegram.org/bot"+TELEGRAM_BOT_TOKEN+"/sendMessage",
+        {method:"post",payload:payload,muteHttpExceptions:true}
+      );
+      const result=JSON.parse(response.getContentText());
+      return result.ok?result.result.message_id:null;
+    }catch(e){
+      return null;
+    }
+  }
+
+  function getReplyMarkup(buttons){
+    const keyboard=String(buttons||"").split(/\r?\n/).map(function(line){
+      const separator=line.indexOf("|");
+      const text=line.slice(0,separator).trim();
+      const url=line.slice(separator+1).trim();
+      return separator>0&&/^https?:\/\//i.test(url)?[{text:text,url:url}]:null;
+    }).filter(Boolean);
+    return keyboard.length?JSON.stringify({inline_keyboard:keyboard}):"";
+  }
+
+  function sendPosts(channels,photoId,text,postIds,buttons){
+    let ids={};
+    if(postIds){
+      try{
+        ids=JSON.parse(postIds);
+      }catch(e){
+        ids={};
+      }
+    }
+    photoId=String(photoId||"").trim();
+    for(const channel of channels){
+      if(ids[channel])continue;
+      const destination=DESTINATIONS[channel];
+      if(!destination)continue;
+      let messageId=null;
+      switch(destination.platform){
+        case "Telegram":
+          const replyMarkup=getReplyMarkup(buttons);
+          if(!photoId||photoId.toLowerCase()==="без фото"){
+            messageId=plannerSendMessage(destination.id,text,replyMarkup);
+          }else{
+            try{
+              const blob=DriveApp.getFileById(photoId).getBlob();
+              messageId=sendTelegram(destination.id,blob,text,replyMarkup);
+            }catch(e){}
+            if(!messageId){
+              messageId=plannerSendMessage(destination.id,"⚠️ Фото не удалось загрузить.\n\n"+text,replyMarkup);
+            }
+          }
+          break;
+        case "VK":
+          messageId=sendVK(destination.groupId,text);
+          break;
+      }
+      if(messageId)ids[channel]=messageId;
+    }
+    return{ids:ids,complete:channels.every(function(channel){return ids[channel];})};
+  }
+
+  function deletePosts(channels,postIds){
+    let telegramOk=true;
+    let ids;
+    try{
+      ids=JSON.parse(postIds);
+    }catch(e){
+      return false;
+    }
+    for(const channel of channels){
+      if(!ids[channel])continue;
+      const destination=DESTINATIONS[channel];
+      if(!destination)continue;
+      switch(destination.platform){
+        case "Telegram":
+          if(!deleteTelegram(destination.id,ids[channel]))telegramOk=false;
+          break;
+        case "VK":
+          deleteVK(destination.groupId,ids[channel]);
+          break;
+      }
+    }
+    return telegramOk;
+  }
+
+  return{
+    sendTelegram:sendTelegram,
+    deleteTelegram:deleteTelegram,
+    vkRequest:vkRequest,
+    sendVK:sendVK,
+    deleteVK:deleteVK,
+    sendPosts:sendPosts,
+    deletePosts:deletePosts,
+    plannerSendMessage:plannerSendMessage,
+    getReplyMarkup:getReplyMarkup
+  };
+})();

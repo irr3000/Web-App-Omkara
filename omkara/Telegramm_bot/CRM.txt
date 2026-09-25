@@ -1,0 +1,54 @@
+/* CRM Skeleton v1.18: маршрутизация webhook и команд */
+
+function isWebhookRequestAuthorized(e){
+  return!!WEBHOOK_SECRET&&!!e&&!!e.parameter&&String(e.parameter.key||"")===WEBHOOK_SECRET;
+}
+
+function doPost(e){
+  if(!isWebhookRequestAuthorized(e)){Logger.log("doPost: отклонён запрос с неверным ключом webhook");return HtmlService.createHtmlOutput("Forbidden");}
+  const update=JSON.parse(e.postData.contents);
+  const updateId=update.update_id==null?"":String(update.update_id);
+  if(updateId&&AppCache.wasUpdateProcessed(updateId))return HtmlService.createHtmlOutput("OK");
+  if(updateId)AppCache.markUpdateProcessed(updateId);
+  try{
+    saveSeeker(update);
+    if(update.message)handleMessage(update);
+    if(update.callback_query)handleCallback(update.callback_query);
+  }catch(error){
+    if(updateId)AppCache.forgetUpdate(updateId);
+    Logger.log("doPost: "+(error&&error.message?error.message:String(error)));
+    throw error;
+  }
+  return HtmlService.createHtmlOutput("OK");
+}
+
+function handleMessage(update){
+  const message=update.message;
+  if(message.text==="/start"){setState(message.chat.id,"");sendActiveMessage(message.chat.id,mainMenuText(),mainMenu());return;}
+  if(message.contact){handleContactMessage(message);return;}
+  if(handleReceipt(update))return;
+  handleTextMessage(update);
+}
+
+function handleCallback(callback){
+  const chatId=callback.message.chat.id,data=String(callback.data||"");
+  answerCallback(callback.id);
+  if(handleAdminCallback(callback))return;
+  if(data.startsWith("retreat_register_")){startRetreatRegistration(chatId,data.replace("retreat_register_",""));return;}
+  if(data.startsWith("retreat_pay_")){openRetreatPayment(chatId,data.replace("retreat_pay_",""));return;}
+  if(data.startsWith("retreat_receipt_")){requestRetreatReceipt(chatId,data.replace("retreat_receipt_",""));return;}
+  if(data.startsWith("retreat_info_")){setState(chatId,"");showRetreatInfo(chatId,data.replace("retreat_info_",""));return;}
+  if(data.startsWith("retreat_email_")){requestRetreatEmail(chatId,data.replace("retreat_email_",""));return;}
+  if(data==="meeting_register"){startMeetingRegistration(chatId);return;}
+  if(data==="meeting_use_saved"){startMeetingWithSavedData(chatId);return;}
+  if(data==="meeting_edit_data"){startMeetingDataEntry(chatId);return;}
+  if(data==="meeting_pay"){setState(chatId,"");showMeetingPayment(chatId);return;}
+  if(data==="meeting_receipt"){requestMeetingReceipt(chatId);return;}
+  if(data==="meeting_info"){setState(chatId,"");showMeetingInfo(chatId);return;}
+  switch(data){
+    case"retreat":setState(chatId,"");showOnlineRetreat(chatId);break;
+    case"meeting":setState(chatId,"");showMeetingScreen(chatId);break;
+    case"about":setState(chatId,"");sendActiveMessage(chatId,aboutMasterInfo(),backMenu());break;
+    case"menu":setState(chatId,"");sendActiveMessage(chatId,mainMenuText(),mainMenu());break;
+  }
+}

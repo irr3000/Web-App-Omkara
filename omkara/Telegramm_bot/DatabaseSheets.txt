@@ -1,0 +1,316 @@
+/* Адаптер Google Sheets. Только этот файл знает имена листов, столбцы и номера строк. */
+var DatabaseSheets=(function(){
+  var SHEETS={users:"Ищущие",applications:"Заявки",retreats:"Ретриты",publications:"Публикации"};
+  var USER_COLUMNS={createdAt:1,telegramId:2,username:3,firstName:4,lastName:5,phone:6,email:7,updatedAt:8,state:9,activeMessageId:10,onlineRetreatId:11};
+  var APPLICATION_COLUMNS={createdAt:1,telegramId:2,subjectId:3,firstName:4,lastName:5,phone:6,status:7,reserved:8,updatedAt:9};
+  var RETREAT_COLUMNS={id:1,name:2,start:3,end:4,price:5,group:6,status:7};
+  var PUBLICATION_COLUMNS={photoId:1,text:2,postDate:3,postTime:4,repeat:5,channels:6,lifetime:7,publishedAt:8,postIds:9,buttons:10};
+
+  function cache(){
+    return DatabaseSheetsCache.runtime();
+  }
+
+  function spreadsheet(){
+    if(!cache().spreadsheet)cache().spreadsheet=SpreadsheetApp.getActiveSpreadsheet();
+    return cache().spreadsheet;
+  }
+
+  function sheet(key){
+    if(!Object.prototype.hasOwnProperty.call(cache().sheets,key))cache().sheets[key]=spreadsheet().getSheetByName(SHEETS[key]);
+    var result=cache().sheets[key];
+    if(!result)throw new Error("Не найден лист «"+SHEETS[key]+"»");
+    return result;
+  }
+
+  function applicationKey(telegramId,subjectId){
+    return String(telegramId)+"_"+String(subjectId||"");
+  }
+
+  function userFromRow(row,rowNumber){
+    return{
+      id:String(row[USER_COLUMNS.telegramId-1]||""),
+      telegramId:String(row[USER_COLUMNS.telegramId-1]||""),
+      createdAt:row[USER_COLUMNS.createdAt-1]||"",
+      username:row[USER_COLUMNS.username-1]||"",
+      firstName:row[USER_COLUMNS.firstName-1]||"",
+      lastName:row[USER_COLUMNS.lastName-1]||"",
+      phone:row[USER_COLUMNS.phone-1]||"",
+      email:row[USER_COLUMNS.email-1]||"",
+      updatedAt:row[USER_COLUMNS.updatedAt-1]||"",
+      state:row[USER_COLUMNS.state-1]||"",
+      activeMessageId:String(row[USER_COLUMNS.activeMessageId-1]||""),
+      onlineRetreatId:String(row[USER_COLUMNS.onlineRetreatId-1]||""),
+      _storageId:rowNumber
+    };
+  }
+
+  function cacheUser(user,persistRow){
+    if(!user||!user.telegramId)return user;
+    cache().userReferences[user.telegramId]=user._storageId;
+    cache().users[user.telegramId]=user;
+    if(persistRow!==false)DatabaseSheetsCache.users.setReference(user.telegramId,user._storageId);
+    return user;
+  }
+
+  function readUserRow(rowNumber){
+    var values=sheet("users").getRange(rowNumber,1,1,USER_COLUMNS.onlineRetreatId).getValues()[0];
+    return cacheUser(userFromRow(values,rowNumber));
+  }
+
+  function findUserRow(telegramId){
+    telegramId=String(telegramId);
+    var runtimeRow=Number(cache().userReferences[telegramId]||0);
+    if(runtimeRow>1)return runtimeRow;
+    var usersSheet=sheet("users"),cachedRow=DatabaseSheetsCache.users.getReference(telegramId);
+    if(cachedRow>1&&cachedRow<=usersSheet.getLastRow()){
+      var cachedValues=usersSheet.getRange(cachedRow,1,1,USER_COLUMNS.onlineRetreatId).getValues()[0],cachedUser=userFromRow(cachedValues,cachedRow);
+      if(cachedUser.telegramId===telegramId){cacheUser(cachedUser);return cachedRow;}
+      DatabaseSheetsCache.users.removeReference(telegramId);
+    }
+    var lastRow=usersSheet.getLastRow();
+    if(lastRow<2)return 0;
+    var found=usersSheet.getRange(2,USER_COLUMNS.telegramId,lastRow-1,1).createTextFinder(telegramId).matchEntireCell(true).findNext();
+    var row=found?found.getRow():0;
+    if(row){cache().userReferences[telegramId]=row;DatabaseSheetsCache.users.setReference(telegramId,row);}
+    return row;
+  }
+
+  function getUser(telegramId){
+    telegramId=String(telegramId);
+    if(cache().users[telegramId])return cache().users[telegramId];
+    var row=findUserRow(telegramId);
+    if(!row)return null;
+    return cache().users[telegramId]||readUserRow(row);
+  }
+
+  function upsertTelegramUser(source){
+    var telegramId=String(source.id),username=source.username||"",existing=getUser(telegramId);
+    if(existing){
+      if(existing.username!==username){
+        sheet("users").getRange(existing._storageId,USER_COLUMNS.username).setValue(username);
+        existing.username=username;
+        delete cache().people[telegramId];
+      }
+      return existing;
+    }
+    var usersSheet=sheet("users"),row=usersSheet.getLastRow()+1,now=new Date();
+    var values=[now,telegramId,username,source.first_name||"",source.last_name||"","","",now,"","",""];
+    usersSheet.getRange(row,1,1,USER_COLUMNS.onlineRetreatId).setValues([values]);
+    return cacheUser(userFromRow(values,row));
+  }
+
+  function setUserField(telegramId,field,value){
+    telegramId=String(telegramId);
+    var column=USER_COLUMNS[field],user=getUser(telegramId);
+    if(!column||!user||user[field]===value)return false;
+    sheet("users").getRange(user._storageId,column).setValue(value);
+    user[field]=field==="activeMessageId"||field==="onlineRetreatId"?String(value||""):value;
+    if(field==="username"||field==="firstName"||field==="lastName"||field==="phone")delete cache().people[telegramId];
+    return true;
+  }
+
+  function setStateAndActiveMessage(telegramId,state,messageId){
+    telegramId=String(telegramId);
+    state=state||"";
+    messageId=String(messageId||"");
+    var user=getUser(telegramId);
+    if(!user)return false;
+    if(String(user.state||"")===String(state)&&String(user.activeMessageId||"")===messageId)return false;
+    sheet("users").getRange(user._storageId,USER_COLUMNS.state,1,2).setValues([[state,messageId]]);
+    user.state=state;
+    user.activeMessageId=messageId;
+    return true;
+  }
+
+  function getPerson(telegramId){
+    telegramId=String(telegramId);
+    if(cache().people[telegramId])return cache().people[telegramId];
+    var user=getUser(telegramId);
+    if(!user)return{};
+    return cache().people[telegramId]={username:user.username||"",firstName:user.firstName||"",lastName:user.lastName||"",phone:user.phone||""};
+  }
+
+  function preloadUsers(){
+    var usersSheet=sheet("users"),lastRow=usersSheet.getLastRow();
+    if(lastRow<2)return[];
+    var data=usersSheet.getRange(2,1,lastRow-1,USER_COLUMNS.onlineRetreatId).getValues(),result=[];
+    for(var i=0;i<data.length;i++){
+      var user=userFromRow(data[i],i+2);
+      if(!user.telegramId)continue;
+      cacheUser(user,false);
+      result.push(user);
+    }
+    return result;
+  }
+
+  function applicationFromRow(row,rowNumber){
+    return{
+      id:String(rowNumber),
+      telegramId:String(row[APPLICATION_COLUMNS.telegramId-1]||""),
+      subjectId:String(row[APPLICATION_COLUMNS.subjectId-1]||""),
+      createdAt:row[APPLICATION_COLUMNS.createdAt-1]||"",
+      firstName:row[APPLICATION_COLUMNS.firstName-1]||"",
+      lastName:row[APPLICATION_COLUMNS.lastName-1]||"",
+      phone:row[APPLICATION_COLUMNS.phone-1]||"",
+      status:row[APPLICATION_COLUMNS.status-1]||"",
+      reserved:row[APPLICATION_COLUMNS.reserved-1]||"",
+      updatedAt:row[APPLICATION_COLUMNS.updatedAt-1]||"",
+      _storageId:rowNumber
+    };
+  }
+
+  function cacheApplication(application){
+    if(!application||!application.telegramId||!application.subjectId)return application;
+    var key=applicationKey(application.telegramId,application.subjectId);
+    cache().applicationReferences[key]=application._storageId;
+    cache().applications[key]=application;
+    return application;
+  }
+
+  function readApplicationRow(rowNumber){
+    var values=sheet("applications").getRange(rowNumber,1,1,APPLICATION_COLUMNS.updatedAt).getValues()[0];
+    return applicationFromRow(values,rowNumber);
+  }
+
+  function scanApplications(){
+    var applicationsSheet=sheet("applications"),lastRow=applicationsSheet.getLastRow(),result=[];
+    if(lastRow<2)return result;
+    var data=applicationsSheet.getRange(2,1,lastRow-1,APPLICATION_COLUMNS.updatedAt).getValues();
+    for(var i=0;i<data.length;i++){
+      var application=applicationFromRow(data[i],i+2);
+      result.push(application);
+      cacheApplication(application);
+    }
+    return result;
+  }
+
+  function getLatestApplication(telegramId,subjectId,refresh){
+    telegramId=String(telegramId);
+    subjectId=String(subjectId||"");
+    if(!subjectId)return null;
+    var key=applicationKey(telegramId,subjectId);
+    if(refresh)DatabaseSheetsCache.applications.invalidate(key);
+    if(cache().applications[key])return cache().applications[key];
+    if(Object.prototype.hasOwnProperty.call(cache().applicationReferences,key)&&!cache().applicationReferences[key])return null;
+    var applicationsSheet=sheet("applications"),lastRow=applicationsSheet.getLastRow(),cachedValue=DatabaseSheetsCache.applications.getReference(key),cachedRow=Number(cachedValue||0);
+    if(cachedValue==="0"){cache().applicationReferences[key]=0;return null;}
+    if(cachedRow>1&&cachedRow<=lastRow){
+      var cached=readApplicationRow(cachedRow);
+      if(cached.telegramId===telegramId&&cached.subjectId===subjectId){cacheApplication(cached);return cached;}
+      DatabaseSheetsCache.applications.removeReference(key);
+    }
+    if(lastRow<2){cache().applicationReferences[key]=0;DatabaseSheetsCache.applications.setReference(key,0);return null;}
+    scanApplications();
+    var row=Number(cache().applicationReferences[key]||0);
+    DatabaseSheetsCache.applications.setReference(key,row);
+    return row?cache().applications[key]:null;
+  }
+
+  function createApplication(data){
+    var applicationsSheet=sheet("applications"),row=applicationsSheet.getLastRow()+1,now=data.createdAt||new Date();
+    var values=[now,String(data.telegramId),String(data.subjectId),data.firstName||"",data.lastName||"",data.phone||"",data.status||"",data.reserved||"",data.updatedAt||now];
+    applicationsSheet.getRange(row,APPLICATION_COLUMNS.subjectId).setNumberFormat("@");
+    applicationsSheet.getRange(row,1,1,APPLICATION_COLUMNS.updatedAt).setValues([values]);
+    var application=cacheApplication(applicationFromRow(values,row)),key=applicationKey(application.telegramId,application.subjectId);
+    DatabaseSheetsCache.applications.setReference(key,row);
+    return application;
+  }
+
+  function updateApplicationStatus(telegramId,subjectId,expectedStatus,status,updatedAt){
+    var application=getLatestApplication(telegramId,subjectId,false);
+    if(!application)return false;
+    if(application.status===status)return true;
+    if(expectedStatus!==undefined&&application.status!==expectedStatus)return false;
+    updatedAt=updatedAt||new Date();
+    sheet("applications").getRange(application._storageId,APPLICATION_COLUMNS.status,1,3).setValues([[status,application.reserved,updatedAt]]);
+    application.status=status;
+    application.updatedAt=updatedAt;
+    cacheApplication(application);
+    return true;
+  }
+
+  function listApplications(){
+    return scanApplications();
+  }
+
+  function bulkUpdateApplicationStatus(ids,status,updatedAt){
+    if(!ids||!ids.length)return;
+    updatedAt=updatedAt||new Date();
+    var rows=ids.map(function(id){return Number(id);}).filter(function(row){return row>1;}),statusCells=[],updatedCells=[];
+    for(var i=0;i<rows.length;i++){
+      statusCells.push("G"+rows[i]);
+      updatedCells.push("I"+rows[i]);
+    }
+    if(!statusCells.length)return;
+    var applicationsSheet=sheet("applications");
+    applicationsSheet.getRangeList(statusCells).setValue(status);
+    applicationsSheet.getRangeList(updatedCells).setValue(updatedAt);
+    var keys=Object.keys(cache().applications);
+    for(var j=0;j<keys.length;j++){
+      var item=cache().applications[keys[j]];
+      if(rows.indexOf(item._storageId)!==-1){item.status=status;item.updatedAt=updatedAt;}
+    }
+  }
+
+  function listRetreats(){
+    if(cache().retreatsLoaded)return cache().retreats;
+    cache().retreatsLoaded=true;
+    var retreatsSheet=sheet("retreats"),lastRow=retreatsSheet.getLastRow();
+    if(lastRow<2)return cache().retreats;
+    var data=retreatsSheet.getRange(2,1,lastRow-1,RETREAT_COLUMNS.status).getValues();
+    for(var i=0;i<data.length;i++){
+      var row=data[i],id=String(row[RETREAT_COLUMNS.id-1]||"");
+      if(!id)continue;
+      cache().retreats[id]={id:id,name:row[RETREAT_COLUMNS.name-1]||"",start:row[RETREAT_COLUMNS.start-1]||"",end:row[RETREAT_COLUMNS.end-1]||"",price:row[RETREAT_COLUMNS.price-1]||"",group:row[RETREAT_COLUMNS.group-1]||"",status:row[RETREAT_COLUMNS.status-1]||""};
+    }
+    return cache().retreats;
+  }
+
+  function publicationFromRow(row,rowNumber){
+    return{id:String(rowNumber),photoId:row[0],text:row[1],postDate:row[2],postTime:row[3],repeat:row[4],channels:row[5],lifetime:row[6],publishedAt:row[7],postIds:row[8],buttons:row[9],_storageId:rowNumber};
+  }
+
+  function listPublications(){
+    var publicationsSheet=sheet("publications"),lastRow=publicationsSheet.getLastRow();
+    if(lastRow<2)return[];
+    var data=publicationsSheet.getRange(2,1,lastRow-1,PUBLICATION_COLUMNS.buttons).getValues(),result=[];
+    for(var i=0;i<data.length;i++)result.push(publicationFromRow(data[i],i+2));
+    return result;
+  }
+
+  function savePublicationPostIds(id,postIds){
+    sheet("publications").getRange(Number(id),PUBLICATION_COLUMNS.postIds).setValue(postIds);
+  }
+
+  function completePublication(id,postIds,publishedAt,schedule){
+    var publicationsSheet=sheet("publications"),row=Number(id);
+    publicationsSheet.getRange(row,PUBLICATION_COLUMNS.publishedAt,1,2).setValues([[publishedAt,postIds]]);
+    if(schedule.clear)publicationsSheet.getRange(row,PUBLICATION_COLUMNS.postDate,1,2).clearContent();
+    else publicationsSheet.getRange(row,PUBLICATION_COLUMNS.postDate).setValue(schedule.nextDate);
+  }
+
+  function clearPublicationDelivery(id){
+    sheet("publications").getRange(Number(id),PUBLICATION_COLUMNS.publishedAt,1,2).clearContent();
+  }
+
+  function validateSchema(keys){
+    var requirements=[{key:"users",columns:USER_COLUMNS.onlineRetreatId},{key:"applications",columns:APPLICATION_COLUMNS.updatedAt},{key:"retreats",columns:RETREAT_COLUMNS.status},{key:"publications",columns:PUBLICATION_COLUMNS.buttons}],errors=[];
+    if(keys&&keys.length)requirements=requirements.filter(function(item){return keys.indexOf(item.key)!==-1;});
+    var activeSpreadsheet=spreadsheet();
+    for(var i=0;i<requirements.length;i++){
+      var item=requirements[i],current=activeSpreadsheet.getSheetByName(SHEETS[item.key]);
+      if(!current)errors.push("Не найден лист «"+SHEETS[item.key]+"»");
+      else if(current.getMaxColumns()<item.columns)errors.push("В листе «"+SHEETS[item.key]+"» должно быть не менее "+item.columns+" столбцов");
+    }
+    return errors;
+  }
+
+  return{
+    name:"google-sheets",
+    users:{get:getUser,upsertTelegram:upsertTelegramUser,setField:setUserField,setStateAndActiveMessage:setStateAndActiveMessage,getPerson:getPerson,preload:preloadUsers},
+    applications:{getLatest:getLatestApplication,create:createApplication,updateStatus:updateApplicationStatus,list:listApplications,bulkUpdateStatus:bulkUpdateApplicationStatus},
+    retreats:{list:listRetreats},
+    publications:{list:listPublications,savePostIds:savePublicationPostIds,complete:completePublication,clearDelivery:clearPublicationDelivery},
+    validateSchema:validateSchema
+  };
+})();

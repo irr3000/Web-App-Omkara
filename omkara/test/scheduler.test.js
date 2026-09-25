@@ -1,0 +1,70 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {randomUUID} from 'node:crypto';
+import {PGlite} from '@electric-sql/pglite';
+import {createApp} from '../app.js';
+import {digest} from '../security.js';
+import {scheduler} from '../Telegramm_bot/telegram-scheduler.js';
+import {telegramAPI} from '../Telegramm_bot/telegram-api.js';
+
+test('scheduler integration with PGlite and authenticated HTTP routes',async t=>{
+ const pg=new PGlite();await pg.waitReady;
+ for(const name of ['001','002','002'])await pg.exec(await readFile(new URL(`../migrations/${name}.sql`,import.meta.url),'utf8'));
+ const query=async(sql,args=[])=>{const r=await pg.query(sql,args);return {...r,rowCount:r.rows.length||r.affectedRows||0};};
+ const db={query,connect:async()=>({query,release(){}})};
+ const admin=randomUUID(),member=randomUUID();
+ await query("INSERT INTO people(id,email,password_hash,role) VALUES($1,'admin@example.test','unused','admin'),($2,'member@example.test','unused','member')",[admin,member]);
+ for(const [raw,id] of [['admin',admin],['member',member]])await query("INSERT INTO sessions VALUES($1,$2,'csrf',now()+interval '1 day')",[digest(raw),id]);
+ const app=createApp({db,mail:{ready:false},origin:'http://localhost',secure:false,telegramSecret:'test-secret',telegramReady:true,telegramChannels:[{id:'-1001',label:'Test'},{id:'-1002',label:'Second'}]});
+ const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
+ t.after(async()=>{await new Promise(r=>server.close(r));await pg.close();});
+ const base=`http://127.0.0.1:${server.address().port}`;
+ async function api(path,method='GET',body,who='admin',csrf='csrf'){
+  const headers={cookie:`omkara_session=${who}`,origin:'http://localhost','X-CSRF-Token':csrf};if(body&&!(body instanceof FormData))headers['Content-Type']='application/json';
+  return fetch(base+path,{method,headers,body:body instanceof FormData?body:body?JSON.stringify(body):undefined});
+ }
+ const draft={text:'Hello <script>alert(1)</script>',publish_at:new Date(Date.now()+3600000).toISOString(),repeat:'once',channels:['-1001','-1002'],buttons:[],enabled:false};
+ assert.equal((await api('/api/admin/scheduled-posts','POST',draft,'member')).status,403);
+ assert.equal((await api('/api/admin/scheduled-posts','POST',draft,'admin','wrong')).status,403);
+ assert.equal((await api('/api/admin/scheduled-posts','GET',null,'missing')).status,401);
+ assert.equal((await api('/api/admin/scheduled-posts','POST',{...draft,buttons:[{text:'x',url:'javascript:alert(1)'}]})).status,400);
+ assert.equal((await api('/api/admin/scheduled-posts','POST',{...draft,channels:['1); DROP TABLE people;--']})).status,400);
+ const created=await api('/api/admin/scheduled-posts','POST',draft);assert.equal(created.status,201);const post=await created.json();
+ const bad=new FormData();bad.set('photo',new Blob(['<svg/>'],{type:'image/png'}),'bad.png');assert.equal((await api(`/api/admin/scheduled-posts/${post.id}/photo`,'POST',bad)).status,400);
+ const good=new FormData();good.set('photo',new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jfL8AAAAASUVORK5CYII=','base64')],{type:'image/png'}),'photo.png');assert.equal((await api(`/api/admin/scheduled-posts/${post.id}/photo`,'POST',good)).status,201);
+ assert.equal((await api(`/api/admin/scheduled-posts/${post.id}/photo`,'GET',null,'member')).status,403);
+ assert.equal((await api(`/api/admin/scheduled-posts/${post.id}`,'PATCH',{text:'x'.repeat(1025),publish_at:draft.publish_at})).status,400);
+ assert.equal((await api(`/api/admin/scheduled-posts/${post.id}/send`,'POST')).status,202);
+ let calls=[],fail=true;
+ const worker=scheduler({db,send:async(method,payload,photo)=>{calls.push(payload.chat_id);assert.equal(method,'sendPhoto');assert.ok(photo.content);if(payload.chat_id==='-1002'&&fail)throw Error('temporary');return {message_id:123};}});
+ await worker.tick();await worker.tick();assert.deepEqual(calls,['-1001','-1002']);
+ assert.equal((await query('SELECT count(*)::int n FROM post_photos')).rows[0].n,1);
+ fail=false;await query("UPDATE post_deliveries SET available_at=now() WHERE state='pending'");await worker.tick();assert.deepEqual(calls,['-1001','-1002','-1002']);
+ assert.equal((await query('SELECT status FROM scheduled_posts WHERE id=$1',[post.id])).rows[0].status,'sent');
+ assert.equal((await query('SELECT count(*)::int n FROM post_photos')).rows[0].n,0);
+ assert.equal((await api(`/api/admin/scheduled-posts/${post.id}/send`,'POST')).status,409);
+ const recurring=await (await api('/api/admin/scheduled-posts','POST',{...draft,repeat:'daily',channels:['-1001']})).json();
+ await api(`/api/admin/scheduled-posts/${recurring.id}/send`,'POST');
+ await scheduler({db,send:async()=>({message_id:124})}).tick();
+ const next=(await query('SELECT * FROM scheduled_posts WHERE id=$1',[recurring.id])).rows[0];assert.equal(next.status,'pending');assert.ok(new Date(next.publish_at)>new Date());
+ const uncertain=await (await api('/api/admin/scheduled-posts','POST',{...draft,channels:['-1001']})).json();await api(`/api/admin/scheduled-posts/${uncertain.id}/send`,'POST');
+ let n=0;const broken=scheduler({db,send:async()=>{n++;throw Object.assign(Error('timeout'),{uncertain:true});}});await broken.tick();await broken.tick();assert.equal(n,1);
+ assert.equal((await query('SELECT state FROM post_deliveries WHERE post_id=$1',[uncertain.id])).rows[0].state,'uncertain');
+ const delivery=(await query('SELECT id FROM post_deliveries WHERE post_id=$1',[uncertain.id])).rows[0];
+ assert.equal((await api(`/api/admin/post-deliveries/${delivery.id}/resolve`,'POST',{action:'retry'})).status,400);
+ assert.equal((await api(`/api/admin/post-deliveries/${delivery.id}/resolve`,'POST',{action:'delivered',message_id:321})).status,200);
+ await broken.tick();assert.equal(n,1);assert.equal((await query('SELECT status FROM scheduled_posts WHERE id=$1',[uncertain.id])).rows[0].status,'sent');
+ await query("UPDATE post_deliveries SET delete_at=now()-interval '1 minute',available_at=now() WHERE post_id=$1",[uncertain.id]);
+ let deleted=0;await scheduler({db,send:async(method,payload)=>{assert.equal(method,'deleteMessage');assert.equal(Number(payload.message_id),321);deleted++;return true;}}).tick();assert.equal(deleted,1);
+ assert.equal((await query('SELECT deleted FROM post_deliveries WHERE post_id=$1',[uncertain.id])).rows[0].deleted,true);
+ assert.equal((await api('/healthz')).status,200);assert.equal((await api('/api/events')).status,200);
+ assert.equal((await fetch(base+'/telegram/webhook',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"update_id":1}'})).status,403);
+ for(let i=0;i<2;i++)assert.equal((await fetch(base+'/telegram/webhook',{method:'POST',headers:{'Content-Type':'application/json','X-Telegram-Bot-Api-Secret-Token':'test-secret'},body:'{"update_id":1}'})).status,200);
+ assert.equal((await query('SELECT count(*)::int n FROM telegram_updates')).rows[0].n,1);
+});
+
+test('Telegram photo transport uses multipart bytes, never file_id',async()=>{
+ const call=telegramAPI('test',async(url,opts)=>{assert.ok(url.endsWith('/sendPhoto'));assert.ok(opts.body instanceof FormData);assert.equal(await opts.body.get('photo').text(),'bytes');return {json:async()=>({ok:true,result:{message_id:1}})};});
+ assert.equal((await call('sendPhoto',{chat_id:'1',caption:'caption'},{mime:'image/png',content:Buffer.from('bytes')})).message_id,1);
+});

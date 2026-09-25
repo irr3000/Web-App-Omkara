@@ -1,0 +1,20 @@
+const DESTINATIONS = {
+  "TG:Йога": { platform: "Telegram", id: "-1003457344524" },
+  "TG:Канал": { platform: "Telegram", id: "-1003603232471" },
+  "TG:Онлайн ретрит": { platform: "Telegram", id: "-1003879248901" },
+  "TG:Админ": { platform: "Telegram", id: "429751280" },
+  "VK:Сообщество": { platform: "VK", groupId: "237847293" }
+};
+
+/* Совместимые точки входа. scheduler остаётся обработчиком действующего триггера. */
+function sendTelegram(destinationId,imageBlob,text,replyMarkup){return PublicationChannels.sendTelegram(destinationId,imageBlob,text,replyMarkup);}
+function deleteTelegram(destinationId,postId){return PublicationChannels.deleteTelegram(destinationId,postId);}
+function vkRequest(method,payload){return PublicationChannels.vkRequest(method,payload);}
+function sendVK(groupId,text){return PublicationChannels.sendVK(groupId,text);}
+function deleteVK(groupId,postId){return PublicationChannels.deleteVK(groupId,postId);}
+function sendPosts(channels,photoId,text,postIds,buttons){return PublicationChannels.sendPosts(channels,photoId,text,postIds,buttons);}
+function deletePosts(channels,postIds){return PublicationChannels.deletePosts(channels,postIds);}
+function getNextPublicationSchedule(repeat,postDate){return PublicationPlanner.getNextPublicationSchedule(repeat,postDate);}
+function scheduler(){return PublicationPlanner.run();}
+function plannerSendMessage(chatId,text,replyMarkup){return PublicationChannels.plannerSendMessage(chatId,text,replyMarkup);}
+function getReplyMarkup(buttons){return PublicationChannels.getReplyMarkup(buttons);}

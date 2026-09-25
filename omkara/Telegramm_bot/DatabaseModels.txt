@@ -1,0 +1,61 @@
+/* Единые модели данных. Скрывают технические поля конкретного хранилища. */
+var DatabaseModels=(function(){
+  var FIELDS={
+    user:["id","telegramId","createdAt","username","firstName","lastName","phone","email","updatedAt","state","activeMessageId","onlineRetreatId"],
+    person:["username","firstName","lastName","phone"],
+    application:["id","telegramId","subjectId","createdAt","firstName","lastName","phone","status","reserved","updatedAt"],
+    retreat:["id","name","start","end","price","group","status"],
+    publication:["id","photoId","text","postDate","postTime","repeat","channels","lifetime","publishedAt","postIds","buttons"]
+  };
+  var IDENTIFIERS={
+    user:{id:true,telegramId:true,activeMessageId:true,onlineRetreatId:true},
+    application:{id:true,telegramId:true,subjectId:true},
+    retreat:{id:true},
+    publication:{id:true}
+  };
+
+  function value(source,key,identifiers){
+    var current=source[key];
+    if(current===undefined||current===null)return"";
+    return identifiers&&identifiers[key]?String(current):current;
+  }
+
+  function normalize(type,source){
+    if(!source)return null;
+    var fields=FIELDS[type],identifiers=IDENTIFIERS[type],result={};
+    for(var i=0;i<fields.length;i++)result[fields[i]]=value(source,fields[i],identifiers);
+    return result;
+  }
+
+  function normalizeList(type,items){
+    if(!items||!items.length)return[];
+    var result=[];
+    for(var i=0;i<items.length;i++){
+      var item=normalize(type,items[i]);
+      if(item)result.push(item);
+    }
+    return result;
+  }
+
+  function normalizeRetreatMap(items){
+    var result={},keys=Object.keys(items||{});
+    for(var i=0;i<keys.length;i++){
+      var retreat=normalize("retreat",items[keys[i]]);
+      if(retreat)result[String(retreat.id||keys[i])]=retreat;
+    }
+    return result;
+  }
+
+  return{
+    fields:FIELDS,
+    user:function(source){return normalize("user",source);},
+    users:function(items){return normalizeList("user",items);},
+    person:function(source){return normalize("person",source)||{username:"",firstName:"",lastName:"",phone:""};},
+    application:function(source){return normalize("application",source);},
+    applications:function(items){return normalizeList("application",items);},
+    retreat:function(source){return normalize("retreat",source);},
+    retreats:function(items){return normalizeRetreatMap(items);},
+    publication:function(source){return normalize("publication",source);},
+    publications:function(items){return normalizeList("publication",items);}
+  };
+})();

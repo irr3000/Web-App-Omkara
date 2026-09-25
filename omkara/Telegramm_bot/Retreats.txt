@@ -1,0 +1,150 @@
+/* CRM v1.18: ретриты и завершение участия */
+
+function showRetreatScreen(chatId,retreatId){
+  const telegramId=String(chatId),currentRetreatId=String(retreatId||getOnlineRetreatId(telegramId)||"");
+  if(!currentRetreatId){showOnlineRetreat(chatId);return;}
+  const retreat=getRetreat(telegramId,currentRetreatId);
+  if(!retreat.applicationId){
+    const retreatData=getRetreatData(currentRetreatId);
+    if(isRetreatOpenForRegistration(retreatData))showRetreatDescription(chatId,currentRetreatId);
+    else showRetreatRegistrationClosed(chatId);
+    return;
+  }
+  if(isRetreatEndPassed(retreat.end)&&retreat.status===STATUS_PARTICIPANT){finishRetreat(telegramId,currentRetreatId);return;}
+  if(retreat.status===STATUS_WAIT_PAYMENT){showPaymentScreen(chatId,currentRetreatId);return;}
+  if(retreat.status===STATUS_PAYMENT_REPORTED){sendActiveMessage(chatId,retreatStatusInfo(retreat.status),retreatReportedMenu());return;}
+  if(retreat.status===STATUS_PARTICIPANT){sendActiveMessage(chatId,retreatStatusInfo(retreat.status),retreatParticipantMenu(retreat));return;}
+  if(retreat.status===STATUS_FINISHED){const user=Database.users.getByTelegramId(telegramId),hasEmail=!!String(user&&user.email||"").trim();sendActiveMessage(chatId,retreatFinishedInfo(hasEmail),retreatFinishedMenu(currentRetreatId,hasEmail));return;}
+  showRetreatDescription(chatId,currentRetreatId);
+}
+
+function showRetreatInfo(chatId,retreatId){
+  const retreat=getRetreatData(retreatId);
+  if(!retreat){showOnlineRetreat(chatId);return;}
+  sendActiveMessage(chatId,retreatInfo(retreat),retreatInfoMenu(retreatId));
+}
+
+function showOnlineRetreat(chatId){
+  const telegramId=String(chatId),savedRetreatId=getOnlineRetreatId(telegramId),openRetreat=getOpenOnlineRetreat(),savedRetreat=savedRetreatId?getRetreat(telegramId,savedRetreatId):null;
+  if(savedRetreat&&savedRetreat.applicationId&&isActiveRetreatStatus(savedRetreat.status)){showRetreatScreen(chatId,savedRetreatId);return;}
+  if(openRetreat){
+    if(savedRetreat&&savedRetreat.applicationId&&savedRetreat.id===openRetreat.id)showRetreatScreen(chatId,savedRetreatId);
+    else showRetreatDescription(chatId,openRetreat.id);
+    return;
+  }
+  if(savedRetreat&&savedRetreat.applicationId){showRetreatScreen(chatId,savedRetreatId);return;}
+  showRetreatRegistrationClosed(chatId);
+}
+
+function showRetreatDescription(chatId,retreatId){
+  const retreat=getRetreatData(retreatId);
+  if(!isRetreatOpenForRegistration(retreat)){showRetreatRegistrationClosed(chatId);return;}
+  sendActiveMessage(chatId,retreatInfo(retreat),retreatDescriptionMenu(retreatId));
+}
+
+function showRetreatRegistrationClosed(chatId){
+  sendActiveMessage(chatId,"🕉 <b>Онлайн-ретрит</b>\n\nСейчас запись на онлайн-ретрит закрыта.",backMenu());
+}
+
+function finishRetreat(telegramId,retreatId){
+  if(updateRetreatStatus(telegramId,STATUS_FINISHED,retreatId))showRetreatScreen(telegramId,retreatId);
+}
+
+function getOpenOnlineRetreat(){
+  if(OPEN_ONLINE_RETREAT_LOADED)return OPEN_ONLINE_RETREAT_CACHE;
+  const allRetreats=loadRetreats();
+  let openRetreat=null,openCount=0;
+  for(const id in allRetreats){
+    if(!isRetreatOpenForRegistration(allRetreats[id]))continue;
+    openCount++;
+    openRetreat=allRetreats[id];
+  }
+  if(openCount>1){Logger.log("В листе «Ретриты» открыто больше одного онлайн-ретрита. Запись временно отключена.");openRetreat=null;}
+  OPEN_ONLINE_RETREAT_LOADED=true;
+  OPEN_ONLINE_RETREAT_CACHE=openRetreat;
+  return openRetreat;
+}
+
+function isRetreatOpenForRegistration(retreat){
+  return!!retreat&&retreat.status==="Открыт";
+}
+
+function isActiveRetreatStatus(status){
+  return status===STATUS_WAIT_PAYMENT||status===STATUS_PAYMENT_REPORTED||status===STATUS_PARTICIPANT;
+}
+
+function getRetreatData(retreatId){
+  return loadRetreats()[String(retreatId)]||null;
+}
+
+function getRetreat(telegramId,retreatId){
+  telegramId=String(telegramId);
+  retreatId=String(retreatId||"");
+  const retreat=getRetreatData(retreatId)||{},request=getRequestData(telegramId,retreatId);
+  return{id:retreatId,applicationId:request?request.id:"",status:request?request.status:"",group:retreat.group||"",start:retreat.start||"",end:retreat.end||"",name:retreat.name||"",price:retreat.price||""};
+}
+
+function loadRetreats(){
+  return Database.retreats.list();
+}
+
+function startRetreatRegistration(chatId,retreatId){
+  retreatId=String(retreatId||"");
+  const openRetreat=getOpenOnlineRetreat();
+  if(!openRetreat||openRetreat.id!==retreatId){setState(chatId,"");showOnlineRetreat(chatId);return;}
+  setOnlineRetreatId(chatId,retreatId);
+  if(hasRetreatRequest(chatId,retreatId)){showRetreatScreen(chatId,retreatId);return;}
+  setState(chatId,"Ожидает имя");
+  sendActiveMessage(chatId,"🙏 Как к Вам обращаться?",backMenu());
+}
+
+function requestRetreatEmail(chatId,retreatId){
+  retreatId=String(retreatId||"");
+  const request=getRequestData(chatId,retreatId),user=Database.users.getByTelegramId(chatId),email=String(user&&user.email||"").trim();
+  if(!request||request.status!==STATUS_FINISHED){setState(chatId,"");showRetreatScreen(chatId,retreatId);return;}
+  if(email){setState(chatId,"");showRetreatScreen(chatId,retreatId);return;}
+  setOnlineRetreatId(chatId,retreatId);
+  setState(chatId,STATE_WAIT_EMAIL);
+  sendActiveMessage(chatId,"📧 Напишите Ваш email одним сообщением.",backMenu());
+}
+
+function formatRetreatDate(value){
+  if(!value)return"";
+  const date=new Date(value);
+  if(isNaN(date.getTime()))return escapeHtml(value);
+  return Utilities.formatDate(date,Session.getScriptTimeZone(),"dd.MM.yyyy");
+}
+
+function isRetreatEndPassed(value){
+  if(!value)return false;
+  const date=new Date(value);
+  if(isNaN(date.getTime()))return false;
+  const timezone=Session.getScriptTimeZone();
+  return Utilities.formatDate(new Date(),timezone,"yyyyMMdd")>Utilities.formatDate(date,timezone,"yyyyMMdd");
+}
+
+function processFinishedRetreats(){
+  const lock=LockService.getScriptLock(),finished=[];
+  if(!lock.tryLock(10000))return;
+  try{
+    const applications=Database.applications.list(),now=new Date(),ids=[];
+    for(let i=0;i<applications.length;i++){
+      const application=applications[i],retreat=getRetreatData(application.subjectId);
+      if(!application.telegramId||!retreat||application.status!==STATUS_PARTICIPANT||!isRetreatEndPassed(retreat.end))continue;
+      ids.push(application.id);
+      finished.push({telegramId:application.telegramId,retreatId:application.subjectId});
+    }
+    if(ids.length)Database.applications.bulkUpdateStatus(ids,STATUS_FINISHED,now);
+  }finally{lock.releaseLock();}
+  if(!finished.length)return;
+  preloadSeekers();
+  for(let i=0;i<finished.length;i++){
+    const item=finished[i],user=Database.users.getByTelegramId(item.telegramId),hasEmail=!!String(user&&user.email||"").trim();
+    sendNewActiveMessage(item.telegramId,retreatFinishedInfo(hasEmail),retreatFinishedMenu(item.retreatId,hasEmail));
+  }
+}
+
+function createRetreatFinishTrigger(){
+  const exists=ScriptApp.getProjectTriggers().some(function(trigger){return trigger.getHandlerFunction()==="processFinishedRetreats";});
+  if(!exists)ScriptApp.newTrigger("processFinishedRetreats").timeBased().everyDays(1).atHour(9).create();
+}

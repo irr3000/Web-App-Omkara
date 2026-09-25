@@ -1,0 +1,138 @@
+/* CRM v1.18: переводы, чеки и решения администратора */
+
+function handleAdminCallback(callback){
+  if(!callback||String(callback.from.id)!==String(ADMIN_CHAT_ID))return false;
+  const parts=String(callback.data||"").split("|");
+  if(parts[0]!=="admin"||parts.length<4)return false;
+  const action=parts[1],telegramId=parts[2],isMeeting=action==="meeting_confirm"||action==="meeting_reject";
+  let retreatId="";
+  try{retreatId=decodeURIComponent(parts.slice(3).join("|"));}catch(e){return true;}
+  if(!telegramId||!retreatId)return true;
+  if(isMeeting)retreatId=MEETING_REQUEST_ID;
+  const adminName=callback.from.username?"@"+callback.from.username:callback.from.first_name||"Администратор";
+  let status="",title="",actionText="";
+  if(action==="confirm"){status=STATUS_PARTICIPANT;title="Перевод подтверждён";actionText="✅ <b>Подтвердил:</b>";}
+  else if(action==="reject"){status=STATUS_WAIT_PAYMENT;title="Перевод не подтверждён";actionText="❌ <b>Отклонил:</b>";}
+  else if(action==="meeting_confirm"){status=STATUS_MEETING_CONFIRMED;title="Перевод благодарности подтверждён";actionText="✅ <b>Подтвердил:</b>";}
+  else if(action==="meeting_reject"){status=STATUS_WAIT_PAYMENT;title="Перевод благодарности не подтверждён";actionText="❌ <b>Отклонил:</b>";}
+  else return true;
+  const lock=LockService.getScriptLock();
+  if(!lock.tryLock(10000))return true;
+  try{
+    const retreat=isMeeting?getRequestData(telegramId,MEETING_REQUEST_ID):getRetreat(telegramId,retreatId);
+    if(!retreat||retreat.status!==STATUS_PAYMENT_REPORTED)return true;
+    if(!updateRetreatStatus(telegramId,status,retreatId,true))return true;
+  }finally{lock.releaseLock();}
+  const person=getRetreatPerson(telegramId),retreatData=isMeeting?null:getRetreatData(retreatId)||{},subjectName=isMeeting?"Индивидуальная встреча":retreatData.name||retreatId;
+  if(isMeeting){
+    if(status===STATUS_MEETING_CONFIRMED)replaceActiveMessage(telegramId,meetingStatusInfo(status),meetingConfirmedMenu(),"");
+    else{setState(telegramId,"");sendActiveMessage(telegramId,meetingRejectedInfo(),meetingPaymentMenu());}
+  }else{
+    if(status===STATUS_PARTICIPANT)replaceActiveMessage(telegramId,retreatStatusInfo(status),retreatParticipantMenu(getRetreat(telegramId,retreatId)),"");
+    else{setState(telegramId,"");sendActiveMessage(telegramId,retreatRejectedInfo(),retreatPaymentMenu(retreatId));}
+  }
+  editTelegramCaption(callback.message.chat.id,callback.message.message_id,adminResultCaption(person,telegramId,subjectName,title,actionText,adminName,isMeeting?"Запись":"Ретрит"),{inline_keyboard:[]});
+  return true;
+}
+
+function showPaymentScreen(chatId,retreatId){
+  retreatId=String(retreatId||"");
+  const request=getRequestData(chatId,retreatId),retreat=getRetreatData(retreatId);
+  if(request&&request.status!==STATUS_WAIT_PAYMENT){showRetreatScreen(chatId,retreatId);return;}
+  if(!request&&!isRetreatOpenForRegistration(retreat)){showRetreatRegistrationClosed(chatId);return;}
+  setOnlineRetreatId(chatId,retreatId);
+  sendActiveMessage(chatId,retreatPaymentInfo(),retreatPaymentMenu(retreatId));
+}
+
+function showMeetingPayment(chatId){
+  const request=getRequestData(chatId,MEETING_REQUEST_ID);
+  if(request&&request.status!==STATUS_WAIT_PAYMENT){showMeetingScreen(chatId);return;}
+  sendActiveMessage(chatId,meetingPaymentInfo(),meetingPaymentMenu());
+}
+
+function handleReceipt(update){
+  const message=update.message;
+  if(!message)return false;
+  const state=getState(message.from.id);
+  if(state!==STATE_WAIT_RECEIPT&&state!==STATE_WAIT_MEETING_RECEIPT)return false;
+  const photo=message.photo,document=message.document,isPdf=!!document&&document.mime_type==="application/pdf",fileId=photo?photo[photo.length-1].file_id:isPdf?document.file_id:"";
+  if(fileId){if(state===STATE_WAIT_MEETING_RECEIPT)processMeetingReceipt(message.from.id,fileId,!!photo);else processReceipt(message.from.id,fileId,!!photo);return true;}
+  sendActiveMessage(message.from.id,"🙏 Пожалуйста, отправьте фотографию или PDF-файл с подтверждением перевода.",backMenu());
+  return true;
+}
+
+function savePaymentReport(telegramId,retreatId){
+  telegramId=String(telegramId);
+  retreatId=String(retreatId||"");
+  const lock=LockService.getScriptLock();
+  if(!retreatId||!lock.tryLock(10000))return false;
+  try{
+    const request=Database.applications.getLatest(telegramId,retreatId,true);
+    if(request){
+      if(request.status===STATUS_PAYMENT_REPORTED)return true;
+      if(request.status!==STATUS_WAIT_PAYMENT)return false;
+      return updateRetreatStatus(telegramId,STATUS_PAYMENT_REPORTED,retreatId,true);
+    }
+    const openRetreat=getOpenOnlineRetreat();
+    if(!openRetreat||openRetreat.id!==retreatId)return false;
+    const person=getRetreatPerson(telegramId),now=new Date();
+    return!!Database.applications.create({telegramId:telegramId,subjectId:retreatId,firstName:person.firstName,lastName:person.lastName,phone:person.phone,status:STATUS_PAYMENT_REPORTED,reserved:"",createdAt:now,updatedAt:now});
+  }finally{lock.releaseLock();}
+}
+
+function saveMeetingPaymentReport(telegramId){
+  telegramId=String(telegramId);
+  const retreatId=MEETING_REQUEST_ID,lock=LockService.getScriptLock();
+  if(!lock.tryLock(10000))return false;
+  try{
+    const request=Database.applications.getLatest(telegramId,retreatId,true);
+    if(request){
+      if(request.status===STATUS_PAYMENT_REPORTED)return true;
+      if(request.status!==STATUS_WAIT_PAYMENT)return false;
+      return updateRetreatStatus(telegramId,STATUS_PAYMENT_REPORTED,retreatId,true);
+    }
+    const person=getRetreatPerson(telegramId),now=new Date();
+    return!!Database.applications.create({telegramId:telegramId,subjectId:retreatId,firstName:person.firstName,lastName:person.lastName,phone:person.phone,status:STATUS_PAYMENT_REPORTED,reserved:"",createdAt:now,updatedAt:now});
+  }finally{lock.releaseLock();}
+}
+
+function processReceipt(telegramId,fileId,isPhoto){
+  telegramId=String(telegramId);
+  const retreatId=getOnlineRetreatId(telegramId);
+  if(!savePaymentReport(telegramId,retreatId)){sendActiveMessage(telegramId,"🙏 Не удалось сохранить сообщение о переводе. Пожалуйста, отправьте чек ещё раз.",backMenu());return false;}
+  const caption=adminReceiptCaption(telegramId,retreatId),keyboard=adminRetreatMenu(telegramId,retreatId),sent=isPhoto?crmSendPhoto(ADMIN_CHAT_ID,fileId,caption,keyboard):crmSendDocument(ADMIN_CHAT_ID,fileId,caption,keyboard);
+  if(!sent){updateRetreatStatus(telegramId,STATUS_WAIT_PAYMENT,retreatId);setState(telegramId,STATE_WAIT_RECEIPT);sendActiveMessage(telegramId,"🙏 Не удалось передать чек администратору. Пожалуйста, отправьте его ещё раз.",backMenu());return false;}
+  replaceActiveMessage(telegramId,retreatStatusInfo(STATUS_PAYMENT_REPORTED),retreatReportedMenu(),"");
+  return true;
+}
+
+function processMeetingReceipt(telegramId,fileId,isPhoto){
+  telegramId=String(telegramId);
+  if(!saveMeetingPaymentReport(telegramId)){sendActiveMessage(telegramId,"🙏 Не удалось сохранить сообщение о переводе. Пожалуйста, отправьте чек ещё раз.",backMenu());return false;}
+  const caption=adminMeetingReceiptCaption(telegramId),keyboard=adminMeetingMenu(telegramId),sent=isPhoto?crmSendPhoto(ADMIN_CHAT_ID,fileId,caption,keyboard):crmSendDocument(ADMIN_CHAT_ID,fileId,caption,keyboard);
+  if(!sent){updateRetreatStatus(telegramId,STATUS_WAIT_PAYMENT,MEETING_REQUEST_ID);setState(telegramId,STATE_WAIT_MEETING_RECEIPT);sendActiveMessage(telegramId,"🙏 Не удалось передать чек администратору. Пожалуйста, отправьте его ещё раз.",backMenu());return false;}
+  replaceActiveMessage(telegramId,meetingStatusInfo(STATUS_PAYMENT_REPORTED),meetingReportedMenu(),"");
+  return true;
+}
+
+function openRetreatPayment(chatId,retreatId){
+  setState(chatId,"");
+  showPaymentScreen(chatId,retreatId);
+}
+
+function requestRetreatReceipt(chatId,retreatId){
+  retreatId=String(retreatId||"");
+  const request=getRequestData(chatId,retreatId),retreat=getRetreatData(retreatId);
+  if(request&&request.status!==STATUS_WAIT_PAYMENT){showRetreatScreen(chatId,retreatId);return;}
+  if(!request&&!isRetreatOpenForRegistration(retreat)){showRetreatRegistrationClosed(chatId);return;}
+  setOnlineRetreatId(chatId,retreatId);
+  setState(chatId,STATE_WAIT_RECEIPT);
+  sendActiveMessage(chatId,"📷 Отправьте фотографию или PDF-файл чека одним сообщением.",backMenu());
+}
+
+function requestMeetingReceipt(chatId){
+  const request=getRequestData(chatId,MEETING_REQUEST_ID);
+  if(request&&request.status!==STATUS_WAIT_PAYMENT){showMeetingScreen(chatId);return;}
+  setState(chatId,STATE_WAIT_MEETING_RECEIPT);
+  sendActiveMessage(chatId,"📷 Отправьте фотографию или PDF-файл чека одним сообщением.",backMenu());
+}

@@ -1,0 +1,29 @@
+/* Контракт адаптера данных для Google Sheets и будущих хранилищ. */
+var DatabaseContract=(function(){
+  var METHODS={
+    users:["get","upsertTelegram","setField","setStateAndActiveMessage","getPerson","preload"],
+    applications:["getLatest","create","updateStatus","list","bulkUpdateStatus"],
+    retreats:["list"],
+    publications:["list","savePostIds","complete","clearDelivery"],
+    root:["validateSchema"]
+  };
+
+  function getErrors(adapter){
+    if(!adapter||typeof adapter!=="object")return["Адаптер данных не задан"];
+    var errors=[],sections=Object.keys(METHODS);
+    for(var i=0;i<sections.length;i++){
+      var section=sections[i],target=section==="root"?adapter:adapter[section],methods=METHODS[section];
+      if(!target){errors.push("В адаптере данных отсутствует раздел "+section);continue;}
+      for(var j=0;j<methods.length;j++)if(typeof target[methods[j]]!=="function")errors.push("В адаптере данных отсутствует метод "+(section==="root"?"":section+".")+methods[j]);
+    }
+    return errors;
+  }
+
+  function assertAdapter(adapter){
+    var errors=getErrors(adapter);
+    if(errors.length)throw new Error(errors.join("; "));
+    return adapter;
+  }
+
+  return{methods:METHODS,getErrors:getErrors,assertAdapter:assertAdapter};
+})();

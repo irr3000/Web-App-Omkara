@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS telegram_poll_cursor (id integer PRIMARY KEY CHECK(id=1), next_offset bigint NOT NULL DEFAULT 0); INSERT INTO telegram_poll_cursor(id) VALUES(1) ON CONFLICT DO NOTHING;

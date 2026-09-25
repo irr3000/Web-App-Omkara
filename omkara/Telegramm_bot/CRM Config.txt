@@ -1,0 +1,14 @@
+/* CRM v1.18: статусы и бизнес-конфигурация */
+const STATUS_WAIT_PAYMENT="Ожидает перевода",STATUS_PAYMENT_REPORTED="Сообщил о переводе",STATUS_PARTICIPANT="Участник ретрита",STATUS_FINISHED="Ретрит завершен",STATUS_MEETING_CONFIRMED="Индивидуальная встреча подтверждена";
+const STATE_WAIT_RECEIPT="Ожидает чек",STATE_WAIT_EMAIL="Ожидает email",STATE_WAIT_MEETING_RECEIPT="Ожидает чек встречи",STATE_WAIT_MEETING_NAME="Ожидает имя встречи",STATE_WAIT_MEETING_LASTNAME="Ожидает фамилию встречи",STATE_WAIT_MEETING_PHONE="Ожидает телефон встречи";
+const ADMIN_CHAT_ID="136541881";
+const MEETING_REQUEST_ID="INDIVIDUAL_MEETING",MEETING_PRICE="10 000 ₽";
+const RETREAT_STATUS_TEXT={};
+RETREAT_STATUS_TEXT[STATUS_PAYMENT_REPORTED]="🙏 Благодарю!\n\nМы получили Ваше сообщение о переводе.\n\nПосле проверки перевода статус будет обновлён.";
+RETREAT_STATUS_TEXT[STATUS_PARTICIPANT]="🎉 Поздравляю!\n\nВы являетесь участником онлайн-ретрита.\n\nВся дальнейшая информация будет публиковаться в группе ретрита.";
+RETREAT_STATUS_TEXT[STATUS_FINISHED]="🙏 Благодарю за участие в онлайн-ретрите.";
+const ALLOWED_STATUS_TRANSITIONS={};
+ALLOWED_STATUS_TRANSITIONS[STATUS_WAIT_PAYMENT]=[STATUS_PAYMENT_REPORTED];
+ALLOWED_STATUS_TRANSITIONS[STATUS_PAYMENT_REPORTED]=[STATUS_PARTICIPANT,STATUS_MEETING_CONFIRMED,STATUS_WAIT_PAYMENT];
+ALLOWED_STATUS_TRANSITIONS[STATUS_PARTICIPANT]=[STATUS_FINISHED];
+let OPEN_ONLINE_RETREAT_LOADED=false,OPEN_ONLINE_RETREAT_CACHE=null;
