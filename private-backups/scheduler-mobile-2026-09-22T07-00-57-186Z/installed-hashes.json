@@ -1,0 +1,15 @@
+{
+  "Telegramm_bot/admin-scheduler.js": "4ce3c038e9983c2c2d393f49ed67e9438e60cd4b1b830bca1795f34537b9125a",
+  "Telegramm_bot/telegram-scheduler.js": "227cb6abc43629b6ca9b4cf8c9c429a98bf824f026982b0b3b25bc42670bff2f",
+  "Telegramm_bot/telegram-api.js": "a3eda5029207608677d427cacdf5b94381d202f6a1135c32912f9826a40da910",
+  "Telegramm_bot/telegram-poller.js": "d061c143ec631cefb4fcbc799dca78ae5cecf96bad2ec8f59c8fccd73a5f5954",
+  "Telegramm_bot/scheduler-chats.js": "f0fdd7a41c98993762e264205a9d3edf2a2c9dd31eed9e06f730ddbeb35eed88",
+  "Telegramm_bot/scheduler-cleanup.js": "83807e5e7797268c0c64a365b83df07e07c433a2ce5176f677f06d678ad50f5d",
+  "public/admin-scheduler-ui.js": "2e41647a8a4149c5be90763190daca7c773eda26007bff0e571a8b79fd2ca774",
+  "public/admin-scheduler.css": "cb1136b0e3d04bc55c8f78e106dc04a6be9562ffe1a05c2d487e8f21eda69305",
+  "telegram.js": "d7ef07db2626d1f2150b9e6428db7d132c8370e1d4e3f9689920f3ec00513988",
+  "scripts/migrate.js": "07547963cd4200fa185be8038e88f9758fca9ab1524670cb6edae06b4f287795",
+  "scripts/telegram-webhook.js": "fd9508f70f9328bf56a67fea2e481cc824e2c724a3650fd4ce038e9063130252",
+  "migrations/005.sql": "72fa3098509a93967b6490b77ad267315384cac9c765cddd0ba00f314f4dc3ab",
+  "public/app.js": "86102144bcd5d935dbf443312e5ee4d1233aa4b122e93de764ff275105dc4ef4"
+}
