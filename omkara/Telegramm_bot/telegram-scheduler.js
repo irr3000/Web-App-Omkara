@@ -1,12 +1,13 @@
 import {transaction} from '../db.js';
 import {telegramAPI} from './telegram-api.js';
 import {preserveDeletions} from './scheduler-cleanup.js';
+import {deletionDeadline} from './deletion-delay.js';
 
 export function nextOccurrence(post,now=Date.now()){
  const step=post.repeat==='daily'?86400000:post.repeat==='weekly'?604800000:0;
  if(!step)return null;
  const base=new Date(post.publish_at).getTime(),shift=(Math.floor(Math.max(0,now-base)/step)+1)*step;
- return {publish_at:new Date(base+shift),expires_at:post.expires_at?new Date(new Date(post.expires_at).getTime()+shift):null};
+ return {publish_at:new Date(base+shift)};
 }
 export function scheduler({db,botToken,send=telegramAPI(botToken)}){
  let busy=false;
@@ -19,19 +20,13 @@ export function scheduler({db,botToken,send=telegramAPI(botToken)}){
    await transaction(db,async c=>{
     const posts=(await c.query("SELECT * FROM scheduled_posts WHERE enabled AND status='pending' AND publish_at<=now() ORDER BY publish_at FOR UPDATE SKIP LOCKED LIMIT 10")).rows;
     for(const p of posts){
-     if(p.expires_at&&new Date(p.expires_at)<=new Date()){
-      const next=nextOccurrence(p);
-      if(next)await c.query("UPDATE scheduled_posts SET publish_at=$2,expires_at=$3,updated_at=now() WHERE id=$1",[p.id,next.publish_at,next.expires_at]);
-      else await c.query("UPDATE scheduled_posts SET enabled=false,status='expired',updated_at=now() WHERE id=$1",[p.id]);
-      continue;
-     }
-     for(const chat of p.channels)await c.query('INSERT INTO post_deliveries(post_id,occurrence,chat_id,delete_at) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING',[p.id,p.publish_at,chat,p.expires_at]);
+     for(const chat of p.channels)await c.query('INSERT INTO post_deliveries(post_id,occurrence,chat_id,delete_after_seconds) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING',[p.id,p.publish_at,chat,p.delete_after_seconds]);
      await c.query("UPDATE scheduled_posts SET status='sending',updated_at=now() WHERE id=$1",[p.id]);
     }
    });
    const item=await transaction(db,async c=>{
     const d=(await c.query("SELECT d.* FROM post_deliveries d WHERE state='pending' AND available_at<=now() ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1")).rows[0];
-    if(d)await c.query("UPDATE post_deliveries SET state='sending',attempts=attempts+1,available_at=now()+interval '60 seconds' WHERE id=$1",[d.id]);return d;
+    if(d)await c.query("UPDATE post_deliveries SET state='sending',attempts=attempts+1,send_started_at=now(),available_at=now()+interval '60 seconds' WHERE id=$1",[d.id]);return d;
    });
    if(item){
     if(item.delete_at&&new Date(item.delete_at)<=new Date())await db.query("UPDATE post_deliveries SET state='failed',error='Срок публикации истёк.' WHERE id=$1",[item.id]);
@@ -43,7 +38,7 @@ export function scheduler({db,botToken,send=telegramAPI(botToken)}){
       const payload={chat_id:item.chat_id,[photo?'caption':'text']:p.text};if(p.buttons.length)payload.reply_markup={inline_keyboard:p.buttons.map(b=>[b])};
       result=await send(photo?'sendPhoto':'sendMessage',payload,photo);
      }catch(error){await db.query("UPDATE post_deliveries SET state=$2,error=$3,available_at=now()+($4*interval '1 second') WHERE id=$1",[item.id,error.uncertain?'uncertain':error.permanent||item.attempts>=7?'failed':'pending',error.uncertain?'Результат неизвестен: проверьте канал.':error.telegramDescription||'Ошибка Telegram; проверьте права бота и канал.',Math.min(86400,Math.max(30,Number(error.retryAfter)||300))]);}
-     if(result)await db.query("UPDATE post_deliveries SET state='sent',message_id=$2,error=NULL WHERE id=$1",[item.id,result.message_id]);
+     if(result)await db.query("UPDATE post_deliveries SET state='sent',message_id=$2,delete_at=COALESCE($3,delete_at),error=NULL WHERE id=$1",[item.id,result.message_id,deletionDeadline(item.delete_after_seconds,result.date)]);
     }
    }
    await transaction(db,async c=>{
@@ -53,7 +48,7 @@ export function scheduler({db,botToken,send=telegramAPI(botToken)}){
      if(!ds.length||ds.some(d=>d.state!=='sent'))continue;
      const next=nextOccurrence(p),again=!!next;
      await preserveDeletions(c,p.id);
-     await c.query('UPDATE scheduled_posts SET publish_at=COALESCE($2,publish_at),enabled=$3,status=$4,last_result=$5,last_sent_at=now(),expires_at=$6,updated_at=now() WHERE id=$1',[p.id,next?.publish_at||null,again,again?'pending':'sent',JSON.stringify(ds),next?next.expires_at:p.expires_at]);
+     await c.query('UPDATE scheduled_posts SET publish_at=COALESCE($2,publish_at),enabled=$3,status=$4,last_result=$5,last_sent_at=now(),updated_at=now() WHERE id=$1',[p.id,next?.publish_at||null,again,again?'pending':'sent',JSON.stringify(ds)]);
      await c.query('DELETE FROM post_deliveries WHERE post_id=$1',[p.id]);
     }
    });

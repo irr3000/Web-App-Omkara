@@ -4,6 +4,7 @@ import {transaction} from '../db.js';
 import {installPhotoUploader} from './photo-uploader.js';
 import {schedulerChannels} from './scheduler-chats.js';
 import {preserveDeletions} from './scheduler-cleanup.js';
+import {deletionDelay} from './deletion-delay.js';
 
 export function destinations(raw=process.env.TELEGRAM_DESTINATIONS||'[]'){
  const entries=JSON.parse(raw);check(Array.isArray(entries)&&entries.length<=30,'Некорректные каналы.');
@@ -14,16 +15,17 @@ export function postValues(body,channels){
  check(body&&typeof body.text==='string'&&body.text.trim().length>0&&body.text.length<=4096,'Текст — от 1 до 4096 символов.');
  check(['once','daily','weekly'].includes(body.repeat),'Проверьте повтор.');
  check(typeof body.publish_at==='string'&&Number.isFinite(Date.parse(body.publish_at)),'Проверьте дату.');
- check(!body.expires_at||(Number.isFinite(Date.parse(body.expires_at))&&Date.parse(body.expires_at)>Date.parse(body.publish_at)),'Срок публикации должен быть позже даты отправки.');
+ check(!body.expires_at,'Обновите страницу: удаление теперь задаётся интервалом после отправки.');
+ let delay;try{delay=deletionDelay(body.delete_after_seconds);}catch(e){check(false,e.message);}
  check(Array.isArray(body.channels)&&body.channels.length>0&&body.channels.length<=30&&body.channels.every(id=>channels.some(c=>c.id===id)),'Выберите настроенные каналы.');
  check(Array.isArray(body.buttons)&&body.buttons.length<=20,'Не более 20 кнопок.');
  for(const b of body.buttons){check(typeof b.text==='string'&&b.text.trim().length>0&&b.text.length<=64&&typeof b.url==='string'&&b.url.length<=2048,'Проверьте кнопки.');let u;try{u=new URL(b.url);}catch{}check(u&&['http:','https:'].includes(u.protocol)&&!u.username&&!u.password,'Для кнопок разрешены только HTTP(S)-ссылки.');}
- return [body.text,body.publish_at,body.repeat,JSON.stringify([...new Set(body.channels)]),JSON.stringify(body.buttons),body.expires_at||null,body.enabled!==false];
+ return [body.text,body.publish_at,body.repeat,JSON.stringify([...new Set(body.channels)]),JSON.stringify(body.buttons),delay,body.enabled!==false];
 }
 export function installSchedulerRoutes(app,options){
  const {db,admin,uuid,channels=[],telegramReady=false}=options;
  app.get('/api/admin/scheduled-posts',admin,async(_req,res)=>res.json({channels:await schedulerChannels(db,channels),telegram_ready:telegramReady,posts:(await db.query('SELECT p.*,EXISTS(SELECT 1 FROM post_photos f WHERE f.post_id=p.id) has_photo FROM scheduled_posts p ORDER BY created_at DESC LIMIT 200')).rows,deliveries:(await db.query('SELECT d.id,d.post_id,d.chat_id,d.state,d.error FROM post_deliveries d JOIN scheduled_posts p ON p.id=d.post_id AND p.publish_at=d.occurrence ORDER BY d.id')).rows,deletion_errors:(await db.query('SELECT chat_id,error FROM scheduler_deletions WHERE error IS NOT NULL ORDER BY id LIMIT 30')).rows}));
- app.post('/api/admin/scheduled-posts',admin,async(req,res)=>{const values=postValues(req.body,await schedulerChannels(db,channels));const result=await db.query('INSERT INTO scheduled_posts(id,text,publish_at,repeat,channels,buttons,expires_at,enabled,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',[randomUUID(),...values,req.user.id]);res.status(201).json(result.rows[0]);});
+ app.post('/api/admin/scheduled-posts',admin,async(req,res)=>{const values=postValues(req.body,await schedulerChannels(db,channels));const result=await db.query('INSERT INTO scheduled_posts(id,text,publish_at,repeat,channels,buttons,delete_after_seconds,enabled,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',[randomUUID(),...values,req.user.id]);res.status(201).json(result.rows[0]);});
  app.patch('/api/admin/scheduled-posts/:id',admin,async(req,res)=>{
   const id=uuid(req.params.id);const updated=await transaction(db,async c=>{
    const p=(await c.query('SELECT * FROM scheduled_posts WHERE id=$1 FOR UPDATE',[id])).rows[0];check(p,'Публикация не найдена.',404);
@@ -33,7 +35,7 @@ export function installSchedulerRoutes(app,options){
    check(!(await c.query('SELECT 1 FROM post_deliveries WHERE post_id=$1 AND occurrence=$2',[id,p.publish_at])).rowCount,'Отправка уже началась.',409);
    const values=postValues({...p,publish_at:new Date(p.publish_at).toISOString(),...req.body},await schedulerChannels(c,channels));
    if((await c.query('SELECT 1 FROM post_photos WHERE post_id=$1',[id])).rowCount)check(values[0].length<=1024,'Подпись к фото — до 1024 символов.');
-   return (await c.query("UPDATE scheduled_posts SET text=$2,publish_at=$3,repeat=$4,channels=$5,buttons=$6,expires_at=$7,enabled=$8,status='pending',updated_at=now() WHERE id=$1 RETURNING *",[id,...values])).rows[0];
+   return (await c.query("UPDATE scheduled_posts SET text=$2,publish_at=$3,repeat=$4,channels=$5,buttons=$6,delete_after_seconds=$7,enabled=$8,status='pending',updated_at=now() WHERE id=$1 RETURNING *",[id,...values])).rows[0];
   });res.json(updated);
  });
  app.post('/api/admin/scheduled-posts/:id/pause',admin,async(req,res)=>{
@@ -62,7 +64,7 @@ export function installSchedulerRoutes(app,options){
   const retry=req.body.action==='retry';check(retry||req.body.action==='delivered','Выберите действие.');
   check(retry?req.body.checked_channel===true:Number.isSafeInteger(req.body.message_id)&&req.body.message_id>0,'Проверьте канал и укажите ID доставленного сообщения либо подтвердите повтор.');
   await transaction(db,async c=>{
-   const result=await c.query("UPDATE post_deliveries SET state=$2,message_id=$3,error=NULL,available_at=now(),attempts=0 WHERE id=$1 AND state IN ('uncertain','failed') RETURNING post_id",[req.params.id,retry?'pending':'sent',retry?null:req.body.message_id]);
+   const result=await c.query("UPDATE post_deliveries SET state=$2,message_id=$3,delete_at=CASE WHEN $2='sent' AND delete_after_seconds IS NOT NULL THEN COALESCE(send_started_at,now())+delete_after_seconds*interval '1 second' ELSE delete_at END,error=NULL,available_at=now(),attempts=0 WHERE id=$1 AND state IN ('uncertain','failed') RETURNING post_id",[req.params.id,retry?'pending':'sent',retry?null:req.body.message_id]);
    check(result.rowCount,'Статус уже изменился.',409);
    await c.query('INSERT INTO audit(actor_id,action,target_id,details) VALUES($1,$2,$3,$4)',[req.user.id,'telegram_delivery_resolved',result.rows[0].post_id,JSON.stringify({delivery:req.params.id,action:req.body.action})]);
   });res.json({ok:true});
